@@ -181,20 +181,26 @@ const data = await session.get('/weather/forecast', {
 For custom implementations:
 
 ```typescript
-import { signPayment } from '@agentdoor/x402';
+import { buildSignedPaymentHeader } from '@agentdoor/sdk';
 
-const payment = await signPayment({
+const paymentHeader = await buildSignedPaymentHeader({
   network: 'base',
   currency: 'USDC',
   amount: 0.001,
-  recipientAddress: '0xYourWallet...',
-  senderPrivateKey: agentWalletPrivateKey
+  recipient: '0xYourWallet...',
+  wallet: {
+    address: '0x1234...',
+    sign: async (message: string) => {
+      // Sign with wallet private key
+      return signMessage(message, agentWalletPrivateKey);
+    }
+  }
 });
 
 const response = await fetch('https://api.example.com/weather/forecast', {
   headers: {
     'Authorization': 'Bearer agk_live_...',
-    'X-Payment': payment  // "x402 base:USDC:0.001:0x..."
+    'X-Payment': paymentHeader  // "x402 base:USDC:0.001:0x..."
   }
 });
 ```

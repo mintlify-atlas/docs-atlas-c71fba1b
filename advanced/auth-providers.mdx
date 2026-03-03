@@ -12,6 +12,8 @@ Auth provider companions automatically sync AgentDoor agents with your existing 
 - **Auth0** - `@agentdoor/auth0`
 - **Clerk** - `@agentdoor/clerk`
 - **Firebase Auth** - `@agentdoor/firebase`
+- **Stytch** - `@agentdoor/stytch`
+- **Supabase** - `@agentdoor/supabase`
 - **NextAuth.js** - `@agentdoor/next-auth`
 
 ## Auth0 Companion
@@ -243,6 +245,164 @@ interface FirebaseCompanionConfig {
 
 3. Agent email: `{agent_id}@agents.{project_id}.firebaseapp.com`
 
+## Stytch Companion
+
+Sync agents with Stytch Connected Apps.
+
+### Installation
+
+```bash
+npm install @agentdoor/stytch
+```
+
+### Setup
+
+```typescript
+import { StytchCompanion } from "@agentdoor/stytch";
+
+const stytchCompanion = new StytchCompanion(
+  {
+    projectId: process.env.STYTCH_PROJECT_ID!,
+    secret: process.env.STYTCH_SECRET!,
+    environment: "live" // or "test"
+  },
+  stytchClient
+);
+
+const door = createAgentDoor({
+  scopes: [...],
+  onAgentRegistered: async (agent) => {
+    await stytchCompanion.onAgentRegistered(agent);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface StytchCompanionConfig {
+  projectId: string;              // Stytch project ID
+  secret: string;                 // Stytch project secret
+  environment?: "test" | "live";  // Default: "test"
+}
+```
+
+### How It Works
+
+1. Creates a Stytch user for each agent
+2. Stores agent metadata in user's trusted metadata
+3. Agent users can be queried from Stytch dashboard
+
+### Methods
+
+- `onAgentRegistered(agent)` - Create Stytch user for agent
+- `onAgentRevoked(agentId)` - Delete Stytch user
+- `syncAgent(agent)` - Update existing Stytch user
+- `getStytchUserId(agentId)` - Get Stytch user ID
+
+## Supabase Plugin
+
+Store agent records in Supabase with Row Level Security support.
+
+### Installation
+
+```bash
+npm install @agentdoor/supabase
+```
+
+### Setup
+
+```typescript
+import { SupabasePlugin } from "@agentdoor/supabase";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
+
+const supabasePlugin = new SupabasePlugin(
+  {
+    supabaseUrl: process.env.SUPABASE_URL!,
+    supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY!,
+    tableName: "agentdoor_agents", // default
+    autoSync: true
+  },
+  supabase
+);
+
+const door = createAgentDoor({
+  scopes: [...],
+  onAgentRegistered: async (agent) => {
+    await supabasePlugin.onAgentRegistered(agent);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface SupabasePluginConfig {
+  supabaseUrl: string;            // Supabase project URL
+  supabaseServiceKey: string;     // Service role key (for admin operations)
+  tableName?: string;             // Table name (default: "agentdoor_agents")
+  autoSync?: boolean;             // Auto-sync on registration (default: true)
+}
+```
+
+### Database Schema
+
+The plugin requires a table to store agent records. Run this SQL in Supabase:
+
+```sql
+-- Create agentdoor_agents table
+create table agentdoor_agents (
+  id text primary key,
+  public_key text not null,
+  scopes_granted text[] not null default '{}',
+  status text not null default 'active',
+  reputation integer not null default 100,
+  x402_wallet text,
+  metadata jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Row Level Security policies
+alter table agentdoor_agents enable row level security;
+
+-- Allow agents to read their own record
+create policy "Agents can read own record"
+  on agentdoor_agents for select
+  using (id = current_setting('request.jwt.claims')::json->>'agent_id');
+
+-- Trigger to update updated_at
+create trigger update_agentdoor_agents_updated_at
+  before update on agentdoor_agents
+  for each row
+  execute function update_updated_at_column();
+```
+
+### Methods
+
+- `onAgentRegistered(agent)` - Create agent record in Supabase
+- `onAgentRevoked(agentId)` - Delete agent record
+- `syncAgent(agent)` - Upsert agent record
+- `getAgentRecord(agentId)` - Query agent from Supabase
+
+### Using with RLS
+
+Agents can query their own data from Supabase using their JWT token:
+
+```typescript
+// Agent-side code
+const { data, error } = await supabase
+  .from('agentdoor_agents')
+  .select('*')
+  .eq('id', agentId)
+  .single();
+```
+
 ## NextAuth.js Companion
 
 Integrate agents with NextAuth.js sessions.
@@ -401,6 +561,25 @@ const listResult = await admin.auth().listUsers();
 const agents = listResult.users.filter(u => 
   u.customClaims?.agentdoor?.is_agent === true
 );
+```
+
+### Stytch
+
+```typescript
+// Query agent users from Stytch
+const users = await stytchClient.searchUsers({
+  filter: { trusted_metadata: { is_agent: true } }
+});
+```
+
+### Supabase
+
+```typescript
+// Query all agents
+const { data: agents } = await supabase
+  .from('agentdoor_agents')
+  .select('*')
+  .eq('status', 'active');
 ```
 
 ## Best Practices
