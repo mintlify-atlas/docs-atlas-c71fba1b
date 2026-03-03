@@ -1,0 +1,136 @@
+{
+  "projectType": "framework",
+  "projectName": "AgentDoor",
+  "projectDescription": "The pre-auth layer for the agentic internet - make your API agent-ready in 3 lines of code",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#60a5fa",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/authentication",
+              "concepts/discovery-protocol",
+              "concepts/agent-detection",
+              "concepts/payments"
+            ]
+          },
+          {
+            "group": "Server Integration",
+            "pages": [
+              "server/express",
+              "server/nextjs",
+              "server/hono",
+              "server/fastify",
+              "server/fastapi",
+              "server/cloudflare-workers",
+              "server/vercel"
+            ]
+          },
+          {
+            "group": "Agent SDK",
+            "pages": [
+              "agent/overview",
+              "agent/typescript-sdk",
+              "agent/python-sdk",
+              "agent/examples"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/configuration",
+              "advanced/storage",
+              "advanced/rate-limiting",
+              "advanced/auth-providers",
+              "advanced/integrations",
+              "advanced/webhooks",
+              "advanced/cli"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/overview",
+              "deployment/railway",
+              "deployment/cloudflare",
+              "deployment/vercel"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/discovery",
+              "api/registration",
+              "api/authentication",
+              "api/protected-routes"
+            ]
+          },
+          {
+            "group": "SDK Reference",
+            "pages": [
+              "api/sdk/agentdoor",
+              "api/sdk/session",
+              "api/sdk/keystore",
+              "api/sdk/x402"
+            ]
+          },
+          {
+            "group": "Core Library",
+            "pages": [
+              "api/core/config",
+              "api/core/crypto",
+              "api/core/storage",
+              "api/core/rate-limiter"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Headless agent registration in <500ms",
+    "Ed25519 challenge-response authentication",
+    "x402 payment protocol integration",
+    "Multi-framework support (Express, Next.js, Hono, Fastify, FastAPI)",
+    "Agent traffic detection",
+    "Pluggable storage (Memory, SQLite, Postgres)",
+    "Rate limiting and reputation management",
+    "Auth provider companions (Auth0, Clerk, Firebase, Supabase)"
+  ],
+  "publicApiSurface": [
+    "@agentdoor/core - Core library with crypto, auth, and storage",
+    "@agentdoor/sdk - Agent-side TypeScript SDK",
+    "@agentdoor/express - Express.js middleware",
+    "@agentdoor/next - Next.js App Router adapter",
+    "@agentdoor/hono - Hono middleware",
+    "@agentdoor/fastify - Fastify plugin",
+    "@agentdoor/cli - CLI tool (npx agentdoor init)",
+    "@agentdoor/detect - Agent traffic detection",
+    "agentdoor - Python agent SDK",
+    "agentdoor-fastapi - FastAPI middleware",
+    "/.well-known/agentdoor.json - Discovery endpoint",
+    "/agentdoor/register - Agent registration endpoint",
+    "/agentdoor/register/verify - Challenge verification endpoint",
+    "/agentdoor/auth - Token refresh endpoint"
+  ]
+}
