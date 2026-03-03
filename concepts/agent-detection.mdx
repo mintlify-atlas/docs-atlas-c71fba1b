@@ -1,0 +1,554 @@
+---
+title: Agent Detection
+description: How AgentDoor identifies and classifies agent traffic using multiple detection signals
+---
+
+AgentDoor includes a sophisticated agent detection system that classifies HTTP requests as human or agent traffic. This powers "detect-only" mode, giving you visibility into agent usage before enabling registration.
+
+## Why Detect Agents?
+
+Before committing to full agent registration, you might want to:
+
+1. **Measure agent traffic** - Understand how many agents are already accessing your API
+2. **Identify frameworks** - See which agent frameworks (LangChain, CrewAI, etc.) are using your service
+3. **Plan capacity** - Estimate infrastructure needs for agent workloads
+4. **Gradual rollout** - Start with detection, then enable registration once ready
+
+## Detection Architecture
+
+AgentDoor uses a **weighted signal system**. Each detection signal has a confidence weight. The final classification is based on the sum of triggered signals:
+
+```typescript
+interface DetectionResult {
+  isAgent: boolean;           // true if confidence >= 0.5 threshold
+  confidence: number;         // 0.0 - 1.0 (weighted sum of signals)
+  framework?: string;         // Detected framework ("langchain", "crewai", etc.)
+  frameworkVersion?: string;  // Framework version if detected
+  signals: DetectionSignal[]; // Individual signal results
+}
+
+interface DetectionSignal {
+  name: string;      // Signal identifier
+  triggered: boolean; // Whether this signal fired
+  weight: number;     // Contribution to overall confidence
+  detail?: string;    // Additional context
+}
+```
+
+## Detection Signals
+
+AgentDoor analyzes **8 different signals** to classify traffic:
+
+### 1. Self-Identification (Weight: 1.0)
+
+**The most definitive signal.** Agents can self-identify via the `X-Agent-Framework` header:
+
+```typescript
+fetch('https://api.example.com/data', {
+  headers: {
+    'X-Agent-Framework': 'langchain/0.1.0'
+  }
+});
+```
+
+**Detection logic:**
+
+```typescript
+const agentHeader = request.headers['x-agent-framework'];
+if (agentHeader) {
+  const [framework, version] = agentHeader.split('/');
+  return {
+    name: 'self_identification',
+    triggered: true,
+    weight: 1.0,
+    detail: `X-Agent-Framework: ${agentHeader}`,
+    framework,
+    version
+  };
+}
+```
+
+**Confidence contribution:** **100%** (definitive)
+
+### 2. User-Agent String (Weight: 0.7)
+
+**High-confidence signal.** AgentDoor maintains a database of known agent framework User-Agent patterns:
+
+```typescript
+const KNOWN_AGENT_USER_AGENTS = [
+  { pattern: /langchain/i, framework: 'langchain' },
+  { pattern: /crewai/i, framework: 'crewai' },
+  { pattern: /autogen/i, framework: 'autogen' },
+  { pattern: /python-requests/i, framework: 'python-requests' },
+  { pattern: /axios/i, framework: 'axios' },
+  { pattern: /node-fetch/i, framework: 'node-fetch' },
+  { pattern: /curl/i, framework: 'curl' },
+  { pattern: /puppeteer/i, framework: 'puppeteer' },
+  { pattern: /playwright/i, framework: 'playwright' },
+  // ... 30+ patterns
+];
+```
+
+**Examples:**
+
+```
+User-Agent: python-requests/2.31.0
+User-Agent: langchain-py/0.1.0
+User-Agent: CrewAI/1.2.3
+User-Agent: curl/7.88.1
+```
+
+**Also detects non-browser User-Agents:**
+
+```typescript
+// Missing browser engine identifiers
+if (!/Mozilla|Chrome|Safari|Firefox|Edge/i.test(userAgent) ||
+    !/AppleWebKit|Gecko|Trident|Blink/i.test(userAgent)) {
+  return { triggered: true, weight: 0.35 };  // 50% of full weight
+}
+```
+
+**Confidence contribution:** **70%** (high confidence)
+
+### 3. Missing Browser Headers (Weight: 0.4)
+
+**Medium-confidence signal.** Browsers send dozens of headers; agents typically send only a few.
+
+**Typical browser headers:**
+
+```typescript
+const BROWSER_TYPICAL_HEADERS = [
+  'accept-language',
+  'sec-fetch-mode',
+  'sec-fetch-site',
+  'sec-fetch-dest',
+  'sec-ch-ua',
+  'sec-ch-ua-mobile',
+  'sec-ch-ua-platform',
+];
+```
+
+**Detection logic:**
+
+```typescript
+const missingHeaders = BROWSER_TYPICAL_HEADERS.filter(
+  header => !request.headers[header]
+);
+
+const missingRatio = missingHeaders.length / BROWSER_TYPICAL_HEADERS.length;
+
+if (missingRatio > 0.6) {  // More than 60% missing
+  return {
+    name: 'missing_browser_headers',
+    triggered: true,
+    weight: 0.4,
+    detail: `Missing ${missingHeaders.length}/${BROWSER_TYPICAL_HEADERS.length} headers: ${missingHeaders.join(', ')}`
+  };
+}
+```
+
+**Confidence contribution:** **40%** (medium confidence)
+
+### 4. IP Range (Weight: 0.3)
+
+**Medium-confidence signal.** Agents often run from cloud providers:
+
+```typescript
+const KNOWN_AGENT_IP_PREFIXES = [
+  '34.',        // GCP
+  '35.',        // GCP
+  '104.196.',   // GCP
+  '13.',        // Azure
+  '20.',        // Azure
+  '40.',        // Azure
+  '52.',        // AWS
+  '54.',        // AWS
+  '18.',        // AWS
+  '3.',         // AWS
+];
+```
+
+**Detection logic:**
+
+```typescript
+for (const prefix of KNOWN_AGENT_IP_PREFIXES) {
+  if (clientIp.startsWith(prefix)) {
+    return {
+      name: 'ip_range',
+      triggered: true,
+      weight: 0.3,
+      detail: `IP ${clientIp} matches known cloud provider prefix ${prefix}*`
+    };
+  }
+}
+```
+
+**Confidence contribution:** **30%**
+
+### 5. Request Timing Patterns (Weight: 0.3)
+
+**Medium-confidence signal.** Agents often make requests at machine-speed intervals:
+
+```typescript
+class TimingTracker {
+  check(ip: string, timestamp: number) {
+    const intervals = calculateIntervals(ip);
+    const mean = average(intervals);
+    const stdDev = standardDeviation(intervals);
+    const cv = stdDev / mean;  // Coefficient of variation
+    
+    // Very rapid requests
+    if (mean < 100) {
+      return {
+        isPattern: true,
+        detail: `Rapid sequential requests: avg ${mean.toFixed(0)}ms between requests`
+      };
+    }
+    
+    // Very consistent intervals (CV < 0.15)
+    if (cv < 0.15 && intervals.length >= 8) {
+      return {
+        isPattern: true,
+        detail: `Consistent request intervals: CV=${cv.toFixed(3)}, mean=${mean.toFixed(0)}ms`
+      };
+    }
+    
+    return { isPattern: false };
+  }
+}
+```
+
+**Examples:**
+
+```
+Human:  Request at 0ms, 3400ms, 8200ms, 12900ms (irregular)
+Agent:  Request at 0ms, 1000ms, 2000ms, 3000ms (consistent 1s intervals)
+```
+
+**Confidence contribution:** **30%**
+
+### 6. No Cookies (Weight: 0.2)
+
+**Low-confidence signal.** Browsers typically send cookies; agents often don't:
+
+```typescript
+const hasCookies = !!request.headers['cookie'];
+
+if (!hasCookies) {
+  return {
+    name: 'no_cookies',
+    triggered: true,
+    weight: 0.2,
+    detail: 'No Cookie header present'
+  };
+}
+```
+
+**Confidence contribution:** **20%**
+
+### 7. No Referer Header (Weight: 0.15)
+
+**Low-confidence signal.** Browsers send `Referer` when navigating; agents typically don't:
+
+```typescript
+const hasReferer = !!request.headers['referer'] || !!request.headers['referrer'];
+
+if (!hasReferer) {
+  return {
+    name: 'no_referer',
+    triggered: true,
+    weight: 0.15,
+    detail: 'No Referer header present'
+  };
+}
+```
+
+**Confidence contribution:** **15%**
+
+### 8. Accept Header Pattern (Weight: 0.2)
+
+**Low-confidence signal.** Browsers send complex `Accept` headers; agents usually request JSON directly:
+
+```typescript
+const accept = request.headers['accept'];
+
+// Browsers typically send text/html
+const isBrowserAccept = accept?.includes('text/html');
+
+// Agents typically send application/json only
+const isApiOnly = 
+  accept === 'application/json' || 
+  accept === '*/*' || 
+  accept === 'application/json, */*';
+
+if (!isBrowserAccept && isApiOnly) {
+  return {
+    name: 'accept_header',
+    triggered: true,
+    weight: 0.2,
+    detail: `API-only Accept header: "${accept}"`
+  };
+}
+```
+
+**Examples:**
+
+```
+Browser: Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Agent:   Accept: application/json
+```
+
+**Confidence contribution:** **20%**
+
+## Classification Threshold
+
+Requests are classified as agent traffic when the **confidence score ≥ 0.5** (50%):
+
+```typescript
+const AGENT_THRESHOLD = 0.5;
+
+const result: DetectionResult = {
+  isAgent: confidence >= AGENT_THRESHOLD,
+  confidence,
+  framework,
+  frameworkVersion,
+  signals
+};
+```
+
+**Example classification:**
+
+| Signal | Triggered | Weight | Contribution |
+|--------|-----------|--------|-------------|
+| Self-ID | ❌ | 1.0 | 0.0 |
+| User-Agent | ✅ | 0.7 | 0.7 |
+| Missing headers | ✅ | 0.4 | 0.4 |
+| IP range | ❌ | 0.3 | 0.0 |
+| Timing | ✅ | 0.3 | 0.3 |
+| No cookies | ✅ | 0.2 | 0.2 |
+| No referer | ✅ | 0.15 | 0.15 |
+| Accept header | ✅ | 0.2 | 0.2 |
+| **Total** | | | **1.95** |
+
+**Normalized confidence:** `1.95 / 3.25 = 0.60` → **60% confidence** → **Classified as agent**
+
+## Using Detection in Your API
+
+### Detect-Only Mode
+
+Start with detection before enabling full registration:
+
+```javascript
+const { detect } = require('@agentdoor/detect');
+const express = require('express');
+
+const app = express();
+
+// Add detection middleware (no registration)
+app.use(detect({
+  webhook: 'https://hooks.yoursite.com/agent-traffic',
+  onAgent: (req, detection) => {
+    console.log('Agent detected:', {
+      ip: req.ip,
+      confidence: detection.confidence,
+      framework: detection.framework,
+      path: req.path
+    });
+  }
+}));
+
+app.get('/api/data', (req, res) => {
+  if (req.isAgent) {
+    console.log('Request from agent');
+    console.log('Framework:', req.detection?.framework);
+    console.log('Confidence:', req.detection?.confidence);
+  }
+  
+  res.json({ data: 'hello' });
+});
+```
+
+### Fast Detection
+
+For high-performance use cases, use `isLikelyAgent()` instead of full detection:
+
+```typescript
+import { isLikelyAgent, createRequestInfo } from '@agentdoor/core';
+
+// Fast path: only check high-confidence signals
+const requestInfo = createRequestInfo({
+  userAgent: req.headers['user-agent'],
+  headers: req.headers,
+  ip: req.ip,
+  method: req.method,
+  path: req.path
+});
+
+const isAgent = isLikelyAgent(requestInfo);
+// Returns true if:
+// - X-Agent-Framework header present
+// - Known agent User-Agent detected
+// - AgentDoor auth header present
+```
+
+**Performance:**
+- `detectAgent()`: ~0.5ms (full analysis, 8 signals)
+- `isLikelyAgent()`: ~0.1ms (fast path, 3 signals)
+
+### Webhook Integration
+
+```javascript
+app.use(detect({
+  webhook: 'https://hooks.yoursite.com/agent-traffic',
+  webhookHeaders: {
+    'Authorization': 'Bearer YOUR_SECRET_KEY'
+  },
+  onAgent: async (req, detection) => {
+    // Also log to your analytics service
+    await analytics.track('agent_request', {
+      framework: detection.framework,
+      confidence: detection.confidence,
+      endpoint: req.path
+    });
+  }
+}));
+```
+
+**Webhook payload:**
+
+```json
+{
+  "timestamp": "2024-03-03T12:00:00.000Z",
+  "ip": "34.123.45.67",
+  "method": "GET",
+  "path": "/api/weather/forecast",
+  "detection": {
+    "isAgent": true,
+    "confidence": 0.85,
+    "framework": "langchain",
+    "frameworkVersion": "0.1.0",
+    "signals": [
+      {
+        "name": "user_agent",
+        "triggered": true,
+        "weight": 0.7,
+        "detail": "Matched known agent framework: langchain v0.1.0"
+      },
+      {
+        "name": "missing_browser_headers",
+        "triggered": true,
+        "weight": 0.4,
+        "detail": "Missing 6/7 typical browser headers: accept-language, sec-fetch-mode, ..."
+      }
+    ]
+  }
+}
+```
+
+## Extracting Framework Info
+
+Get framework details from a request:
+
+```typescript
+import { extractFrameworkInfo, createRequestInfo } from '@agentdoor/core';
+
+const requestInfo = createRequestInfo({
+  userAgent: 'langchain-py/0.1.0',
+  headers: req.headers,
+  ip: req.ip,
+  method: req.method,
+  path: req.path
+});
+
+const frameworkInfo = extractFrameworkInfo(requestInfo);
+// Returns: { framework: "langchain", version: "0.1.0" }
+
+if (frameworkInfo) {
+  console.log(`Framework: ${frameworkInfo.framework}`);
+  console.log(`Version: ${frameworkInfo.version || 'unknown'}`);
+}
+```
+
+## Upgrade Path: Detect → Register
+
+Start with detection, then enable full registration when ready:
+
+**Phase 1: Detect-only (no auth)**
+
+```javascript
+app.use(detect({
+  webhook: 'https://hooks.yoursite.com/agent-traffic'
+}));
+```
+
+**Phase 2: Add registration (opt-in for agents)**
+
+```javascript
+const agentdoor = require('@agentdoor/express');
+
+app.use(agentdoor({
+  scopes: [{ id: 'data.read', description: 'Read data' }],
+  // Optional: continue logging unregistered agent traffic
+  onUnregisteredAgent: (req, detection) => {
+    console.log('Unregistered agent detected:', detection.framework);
+  }
+}));
+```
+
+**Phase 3: Require registration**
+
+```javascript
+app.use(agentdoor({
+  scopes: [{ id: 'data.read', description: 'Read data' }],
+  requireRegistration: true  // Block unregistered agents
+}));
+```
+
+## Type Reference
+
+```typescript
+interface RequestInfo {
+  userAgent?: string;
+  headers: Record<string, string | string[] | undefined>;
+  ip?: string;
+  method: string;
+  path: string;
+  timestamp?: number;
+}
+
+interface DetectionResult {
+  isAgent: boolean;
+  confidence: number;        // 0.0 - 1.0
+  framework?: string;
+  frameworkVersion?: string;
+  signals: DetectionSignal[];
+}
+
+interface DetectionSignal {
+  name: string;
+  triggered: boolean;
+  weight: number;
+  detail?: string;
+}
+
+// Detection function
+function detectAgent(request: RequestInfo): DetectionResult;
+
+// Fast detection (high-confidence signals only)
+function isLikelyAgent(request: RequestInfo): boolean;
+
+// Extract framework info
+function extractFrameworkInfo(request: RequestInfo): 
+  { framework: string; version?: string } | null;
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Payments" icon="credit-card" href="/concepts/payments">
+    Integrate x402 protocol for per-request payments
+  </Card>
+  <Card title="How It Works" icon="book-open" href="/concepts/how-it-works">
+    Understand the complete AgentDoor architecture
+  </Card>
+</CardGroup>

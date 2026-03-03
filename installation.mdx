@@ -1,0 +1,611 @@
+---
+title: Installation
+description: Install AgentDoor for your framework and environment
+---
+
+# Installation
+
+AgentDoor supports multiple frameworks and deployment environments. Choose the installation method that matches your stack.
+
+## Package Managers
+
+All AgentDoor packages work with npm, pnpm, and yarn:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/express
+```
+
+```bash pnpm
+pnpm add @agentdoor/express
+```
+
+```bash yarn
+yarn add @agentdoor/express
+```
+</CodeGroup>
+
+## Requirements
+
+<Note>
+  **Node.js >= 18** is required for all AgentDoor packages. AgentDoor uses native crypto APIs and ES modules.
+</Note>
+
+- Node.js >= 18
+- TypeScript 5.7+ (if using TypeScript)
+- One of: npm, pnpm >= 9, or yarn
+
+## Framework-Specific Installation
+
+### Express.js
+
+For Express.js applications:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/express
+```
+
+```bash pnpm
+pnpm add @agentdoor/express
+```
+
+```bash yarn
+yarn add @agentdoor/express
+```
+</CodeGroup>
+
+**Peer dependencies:** Express >= 4
+
+**Basic usage:**
+
+```javascript
+const express = require("express");
+const { agentdoor } = require("@agentdoor/express");
+
+const app = express();
+
+app.use(agentdoor({
+  scopes: [{ id: "data.read", description: "Read data" }]
+}));
+
+app.listen(3000);
+```
+
+### Next.js
+
+For Next.js App Router applications:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/next
+```
+
+```bash pnpm
+pnpm add @agentdoor/next
+```
+
+```bash yarn
+yarn add @agentdoor/next
+```
+</CodeGroup>
+
+**Peer dependencies:** Next.js >= 14
+
+**Basic usage:**
+
+Create `middleware.ts` in your project root:
+
+```typescript
+import { createAgentDoorMiddleware } from "@agentdoor/next";
+
+export default createAgentDoorMiddleware({
+  scopes: [
+    { id: "data.read", description: "Read data", price: "$0.001/req" }
+  ],
+  rateLimit: { requests: 1000, window: "1h" },
+});
+
+export const config = {
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+<Tip>
+  The middleware automatically handles all AgentDoor endpoints and sets `x-agentdoor-is-agent` and `x-agentdoor-agent-id` headers that you can read in your route handlers.
+</Tip>
+
+### Hono
+
+For Hono applications (Cloudflare Workers, Deno, Bun):
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/hono
+```
+
+```bash pnpm
+pnpm add @agentdoor/hono
+```
+
+```bash yarn
+yarn add @agentdoor/hono
+```
+</CodeGroup>
+
+**Peer dependencies:** Hono >= 4
+
+**Basic usage:**
+
+```typescript
+import { Hono } from "hono";
+import { agentdoor } from "@agentdoor/hono";
+
+const app = new Hono();
+
+app.use("*", agentdoor({
+  scopes: [{ id: "data.read", description: "Read data" }]
+}));
+
+app.get("/api/data", (c) => {
+  const isAgent = c.get("isAgent");
+  const agent = c.get("agent");
+  
+  return c.json({ data: "hello", isAgent });
+});
+
+export default app;
+```
+
+### Fastify
+
+For Fastify applications:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/fastify
+```
+
+```bash pnpm
+pnpm add @agentdoor/fastify
+```
+
+```bash yarn
+yarn add @agentdoor/fastify
+```
+</CodeGroup>
+
+**Peer dependencies:** Fastify >= 4
+
+**Basic usage:**
+
+```typescript
+import Fastify from "fastify";
+import { agentdoor } from "@agentdoor/fastify";
+
+const app = Fastify();
+
+app.register(agentdoor, {
+  scopes: [{ id: "data.read", description: "Read data" }]
+});
+
+app.get("/api/data", async (request, reply) => {
+  const isAgent = request.isAgent;
+  const agent = request.agent;
+  
+  return { data: "hello", isAgent };
+});
+
+await app.listen({ port: 3000 });
+```
+
+### FastAPI (Python)
+
+For FastAPI applications:
+
+<CodeGroup>
+```bash pip
+pip install agentdoor-fastapi
+```
+
+```bash poetry
+poetry add agentdoor-fastapi
+```
+</CodeGroup>
+
+**Requirements:** Python >= 3.9, FastAPI >= 0.100
+
+**Basic usage:**
+
+```python
+from fastapi import Depends, FastAPI
+from agentdoor_fastapi import AgentDoor, AgentDoorConfig, AgentContext
+
+app = FastAPI()
+gate = AgentDoor(app, config=AgentDoorConfig(
+    service_name="My API",
+    scopes=[{"name": "read", "description": "Read access"}],
+))
+
+@app.get("/protected")
+async def protected(agent: AgentContext = Depends(gate.agent_required())):
+    return {"agent": agent.agent_id, "scopes": agent.scopes}
+```
+
+## Deployment-Specific Packages
+
+### Cloudflare Workers
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/cloudflare
+```
+
+```bash pnpm
+pnpm add @agentdoor/cloudflare
+```
+</CodeGroup>
+
+Includes Durable Objects support for persistent agent storage.
+
+```typescript
+import { agentdoor } from "@agentdoor/cloudflare";
+
+export default {
+  async fetch(request: Request, env: Env) {
+    return agentdoor({
+      scopes: [{ id: "data.read", description: "Read" }],
+      storage: env.AGENT_STORAGE // Durable Object binding
+    })(request);
+  }
+};
+```
+
+### Vercel Edge
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/vercel
+```
+
+```bash pnpm
+pnpm add @agentdoor/vercel
+```
+</CodeGroup>
+
+Optimized for Vercel Edge Runtime:
+
+```typescript
+import { agentdoor } from "@agentdoor/vercel";
+
+export const config = { runtime: "edge" };
+
+export default agentdoor({
+  scopes: [{ id: "data.read", description: "Read" }]
+});
+```
+
+## Agent SDK (Client-Side)
+
+For building agents that connect to AgentDoor-enabled services:
+
+### TypeScript/JavaScript
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/sdk
+```
+
+```bash pnpm
+pnpm add @agentdoor/sdk
+```
+
+```bash yarn
+yarn add @agentdoor/sdk
+```
+</CodeGroup>
+
+**Basic usage:**
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+const agent = new AgentDoor({
+  keyPath: "./agent-keys.json"
+});
+
+const session = await agent.connect("https://api.example.com");
+const data = await session.get("/api/data");
+```
+
+### Python
+
+<CodeGroup>
+```bash pip
+pip install agentdoor
+```
+
+```bash poetry
+poetry add agentdoor
+```
+</CodeGroup>
+
+**Requirements:** Python >= 3.9
+
+**Basic usage:**
+
+```python
+from agentdoor import AgentDoor
+
+agent = AgentDoor(key_path="./agent-keys.json")
+session = await agent.connect("https://api.example.com")
+data = await session.get("/api/data")
+```
+
+## Additional Packages
+
+### CLI Tool
+
+Install globally for the `agentdoor` command:
+
+<CodeGroup>
+```bash npm
+npm install -g @agentdoor/cli
+```
+
+```bash npx (no install)
+npx @agentdoor/cli init
+```
+</CodeGroup>
+
+**Commands:**
+
+```bash
+agentdoor init                        # Interactive setup
+agentdoor init --from-openapi spec.yaml  # Generate from OpenAPI
+agentdoor keygen --output keys.json     # Generate keypair
+```
+
+### Agent Traffic Detection
+
+Detect agent traffic without requiring registration:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/detect
+```
+
+```bash pnpm
+pnpm add @agentdoor/detect
+```
+</CodeGroup>
+
+```javascript
+const { detect } = require("@agentdoor/detect");
+
+app.use(detect({
+  webhook: "https://hooks.yoursite.com/agent-traffic"
+}));
+```
+
+### Auth Provider Companions
+
+Integrate AgentDoor with your existing auth provider:
+
+<CodeGroup>
+```bash Auth0
+npm install @agentdoor/auth0
+```
+
+```bash Clerk
+npm install @agentdoor/clerk
+```
+
+```bash Firebase
+npm install @agentdoor/firebase
+```
+
+```bash Supabase
+npm install @agentdoor/supabase
+```
+</CodeGroup>
+
+See the [Auth Provider Integration](/advanced/auth-providers) guide for usage.
+
+### Payment Integrations
+
+<CodeGroup>
+```bash Stripe
+npm install @agentdoor/stripe
+```
+
+```bash x402 Bazaar
+npm install @agentdoor/bazaar
+```
+</CodeGroup>
+
+## Core Library
+
+For building custom adapters or using AgentDoor programmatically:
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/core
+```
+
+```bash pnpm
+pnpm add @agentdoor/core
+```
+</CodeGroup>
+
+**Exports:**
+
+```typescript
+import { AgentDoorCore } from "@agentdoor/core";
+import { MemoryStorage } from "@agentdoor/core/storage/memory";
+import { SQLiteStorage } from "@agentdoor/core/advanced/storage";
+import { PostgresStorage } from "@agentdoor/core/storage/postgres";
+```
+
+<Note>
+  Most users should use framework-specific packages instead of `@agentdoor/core` directly.
+</Note>
+
+## Storage Backends
+
+AgentDoor uses pluggable storage for agent credentials:
+
+| Storage | Use Case | Installation |
+|---------|----------|-------------|
+| **Memory** | Development, testing | Built-in (no install) |
+| **SQLite** | Single-server production | `npm install better-sqlite3` |
+| **Postgres** | Multi-server production | `npm install pg` |
+
+**Configuration:**
+
+```javascript
+const { SQLiteStorage } = require("@agentdoor/core/advanced/storage");
+
+app.use(agentdoor({
+  scopes: [...],
+  storage: new SQLiteStorage("./agents.db")
+}));
+```
+
+<Warning>
+  Memory storage does not persist across server restarts. Use SQLite or Postgres for production.
+</Warning>
+
+## Deployment Templates
+
+Quick-start templates for popular platforms:
+
+<CardGroup cols={3}>
+  <Card title="Railway" icon="train">
+    ```bash
+    npx degit 0xaron/agentdoor/packages/template-railway my-app
+    cd my-app && npm install
+    ```
+  </Card>
+  
+  <Card title="Cloudflare" icon="cloud">
+    ```bash
+    npx degit 0xaron/agentdoor/packages/template-cloudflare my-app
+    cd my-app && npm install
+    ```
+  </Card>
+  
+  <Card title="Vercel" icon="triangle">
+    ```bash
+    npx degit 0xaron/agentdoor/packages/template-vercel my-app
+    cd my-app && npm install
+    ```
+  </Card>
+</CardGroup>
+
+## Verify Installation
+
+After installation, verify AgentDoor is working:
+
+<Steps>
+  <Step title="Start your server">
+    ```bash
+    node server.js
+    ```
+  </Step>
+  
+  <Step title="Check the discovery endpoint">
+    ```bash
+    curl http://localhost:3000/.well-known/agentdoor.json
+    ```
+    
+    You should see your service configuration in JSON format.
+  </Step>
+  
+  <Step title="Test agent registration">
+    Use the test script included with AgentDoor:
+    
+    ```bash
+    npx @agentdoor/cli test http://localhost:3000
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Node.js version error
+
+```
+SyntaxError: Unexpected token 'export'
+```
+
+**Solution:** Upgrade to Node.js >= 18. AgentDoor uses ES modules.
+
+```bash
+node --version  # Should be >= 18.0.0
+```
+
+### TypeScript errors
+
+```
+Cannot find module '@agentdoor/express' or its corresponding type declarations
+```
+
+**Solution:** Ensure `moduleResolution` is set to `bundler` or `node16` in `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022"
+  }
+}
+```
+
+### Peer dependency warnings
+
+```
+WARNING: peer dependency express@>=4 not installed
+```
+
+**Solution:** Install the required peer dependency:
+
+```bash
+npm install express
+```
+
+### Storage permission errors (SQLite)
+
+```
+Error: EACCES: permission denied, open './agents.db'
+```
+
+**Solution:** Ensure the directory is writable or use an absolute path:
+
+```javascript
+import path from "path";
+import { SQLiteStorage } from "@agentdoor/core/advanced/storage";
+
+const storage = new SQLiteStorage(path.join(__dirname, "agents.db"));
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first agent-ready API in 5 minutes
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure scopes, pricing, rate limits, and storage
+  </Card>
+  
+  <Card title="Examples" icon="code" href="/examples">
+    Browse complete examples for every framework
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="/api-reference">
+    Full API documentation for all endpoints
+  </Card>
+</CardGroup>

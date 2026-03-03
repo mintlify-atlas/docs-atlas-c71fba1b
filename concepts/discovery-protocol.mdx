@@ -1,0 +1,535 @@
+---
+title: Discovery Protocol
+description: How agents discover your service capabilities, pricing, and authentication requirements
+---
+
+The AgentDoor discovery protocol uses the `/.well-known/agentdoor.json` endpoint to provide agents with everything they need to connect to your API—scopes, pricing, rate limits, and authentication methods.
+
+## What is .well-known?
+
+The `/.well-known/` URI prefix is an [IETF standard](https://datatracker.ietf.org/doc/html/rfc8615) used by many protocols for service discovery:
+
+- `/.well-known/openid-configuration` - OpenID Connect
+- `/.well-known/security.txt` - Security contact info
+- `/.well-known/agent-card.json` - Google's A2A protocol
+- `/.well-known/agentdoor.json` - **AgentDoor** (this spec)
+
+By following this convention, agents can **automatically discover** any AgentDoor-enabled service without manual configuration.
+
+## Discovery Document Structure
+
+Here's a complete example of `/.well-known/agentdoor.json`:
+
+```json
+{
+  "agentdoor_version": "1.0",
+  "service_name": "Weather API",
+  "service_description": "Real-time weather data and forecasts for global locations",
+  "registration_endpoint": "/agentdoor/register",
+  "auth_endpoint": "/agentdoor/auth",
+  "scopes_available": [
+    {
+      "id": "weather.read",
+      "description": "Read current weather data and forecasts",
+      "price": "$0.001/req",
+      "rate_limit": "1000/hour"
+    },
+    {
+      "id": "weather.write",
+      "description": "Submit weather observations from personal stations",
+      "price": "$0.005/req",
+      "rate_limit": "100/hour"
+    },
+    {
+      "id": "alerts.subscribe",
+      "description": "Subscribe to real-time weather alerts via webhook",
+      "price": "$0.10/month",
+      "rate_limit": "10/minute"
+    }
+  ],
+  "auth_methods": [
+    "ed25519-challenge",
+    "x402-wallet",
+    "jwt"
+  ],
+  "payment": {
+    "protocol": "x402",
+    "version": "2.0",
+    "networks": ["base", "solana"],
+    "currency": ["USDC", "SOL"],
+    "facilitator": "https://x402.org/facilitator",
+    "deferred": false
+  },
+  "rate_limits": {
+    "registration": "10/1h",
+    "default": "1000/1h"
+  },
+  "companion_protocols": {
+    "a2a_agent_card": "/.well-known/agent-card.json",
+    "mcp_server": "/mcp",
+    "x402_bazaar": true
+  },
+  "docs_url": "https://api.example.com/docs",
+  "support_email": "support@example.com"
+}
+```
+
+## Field Reference
+
+### Required Fields
+
+<ParamField path="agentdoor_version" type="string" required>
+  Protocol version. Current: `"1.0"`
+</ParamField>
+
+<ParamField path="service_name" type="string" required>
+  Human-readable name of your service. 
+  
+  Example: `"Weather API"`, `"Stock Market Data"`
+</ParamField>
+
+<ParamField path="service_description" type="string" required>
+  Brief description of what your service does.
+  
+  Agents use this to decide if your API matches their task.
+</ParamField>
+
+<ParamField path="registration_endpoint" type="string" required>
+  Path to the registration endpoint (relative to domain).
+  
+  Default: `"/agentdoor/register"`
+</ParamField>
+
+<ParamField path="auth_endpoint" type="string" required>
+  Path to the token refresh endpoint.
+  
+  Default: `"/agentdoor/auth"`
+</ParamField>
+
+<ParamField path="scopes_available" type="array" required>
+  Array of scope definitions. Each scope describes a permission level.
+  
+  **Scope object:**
+  ```json
+  {
+    "id": "weather.read",              // Unique scope identifier
+    "description": "Read weather data", // Human-readable description
+    "price": "$0.001/req",             // Optional: pricing
+    "rate_limit": "1000/hour"          // Optional: scope-specific limit
+  }
+  ```
+</ParamField>
+
+<ParamField path="auth_methods" type="array" required>
+  Supported authentication methods. Possible values:
+  - `"ed25519-challenge"` - Ed25519 signature-based auth (default)
+  - `"x402-wallet"` - Authenticate via x402 wallet signature
+  - `"jwt"` - JWT bearer tokens (after initial auth)
+</ParamField>
+
+### Optional Fields
+
+<ParamField path="payment" type="object">
+  x402 payment protocol configuration.
+  
+  **Fields:**
+  - `protocol`: Always `"x402"`
+  - `version`: Protocol version (e.g., `"2.0"`)
+  - `networks`: Supported blockchain networks (`["base", "solana"]`)
+  - `currency`: Accepted currencies (`["USDC", "SOL"]`)
+  - `facilitator`: x402 facilitator URL (optional)
+  - `deferred`: Whether deferred payments are supported (boolean)
+</ParamField>
+
+<ParamField path="rate_limits" type="object">
+  Rate limit information.
+  
+  **Fields:**
+  - `registration`: Rate limit for the registration endpoint (e.g., `"10/1h"`)
+  - `default`: Default rate limit for authenticated agents (e.g., `"1000/1h"`)
+</ParamField>
+
+<ParamField path="companion_protocols" type="object">
+  Links to companion protocol endpoints.
+  
+  **Fields:**
+  - `a2a_agent_card`: Path to A2A agent card (Google's protocol)
+  - `mcp_server`: Path to MCP server endpoint
+  - `x402_bazaar`: Whether the service is listed on x402 Bazaar (boolean)
+</ParamField>
+
+<ParamField path="docs_url" type="string">
+  URL to your API documentation.
+</ParamField>
+
+<ParamField path="support_email" type="string">
+  Support email for agent developers.
+</ParamField>
+
+## Generating the Discovery Document
+
+AgentDoor auto-generates the discovery document from your configuration:
+
+```typescript
+import { generateDiscoveryDocument, serializeDiscoveryDocument } from '@agentdoor/core';
+import type { ResolvedConfig } from '@agentdoor/core';
+
+const config: ResolvedConfig = {
+  scopes: [
+    { id: 'weather.read', description: 'Read weather data', price: '$0.001/req' }
+  ],
+  service: {
+    name: 'Weather API',
+    description: 'Real-time weather data',
+    docsUrl: 'https://api.example.com/docs',
+    supportEmail: 'support@example.com'
+  },
+  x402: {
+    network: 'base',
+    currency: 'USDC',
+    paymentAddress: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'
+  },
+  // ... other config
+};
+
+// Generate discovery document
+const doc = generateDiscoveryDocument(config);
+
+// Serialize to JSON
+const json = serializeDiscoveryDocument(doc);
+// Returns pretty-printed JSON string
+```
+
+**Type definition:**
+
+```typescript
+interface DiscoveryDocument {
+  agentdoor_version: string;
+  service_name: string;
+  service_description: string;
+  registration_endpoint: string;
+  auth_endpoint: string;
+  scopes_available: Array<{
+    id: string;
+    description: string;
+    price?: string;
+    rate_limit?: string;
+  }>;
+  auth_methods: string[];
+  payment?: {
+    protocol: string;
+    version: string;
+    networks: string[];
+    currency: string[];
+    facilitator?: string;
+    deferred: boolean;
+  };
+  rate_limits: {
+    registration: string;
+    default: string;
+  };
+  companion_protocols: {
+    a2a_agent_card?: string;
+    mcp_server?: string;
+    x402_bazaar?: boolean;
+  };
+  docs_url?: string;
+  support_email?: string;
+}
+```
+
+## Serving the Discovery Document
+
+AgentDoor middleware automatically serves the discovery document at `/.well-known/agentdoor.json`:
+
+**Express example:**
+
+```javascript
+const express = require('express');
+const agentdoor = require('@agentdoor/express');
+
+const app = express();
+
+app.use(agentdoor({
+  scopes: [
+    { id: 'data.read', description: 'Read data', price: '$0.001/req' }
+  ],
+  service: {
+    name: 'My API',
+    description: 'A great API for agents'
+  }
+}));
+
+app.listen(3000);
+// Discovery document now available at:
+// http://localhost:3000/.well-known/agentdoor.json
+```
+
+**HTTP headers:**
+
+```typescript
+import { getDiscoveryHeaders } from '@agentdoor/core';
+
+const headers = getDiscoveryHeaders();
+// Returns:
+// {
+//   "Content-Type": "application/json",
+//   "Cache-Control": "public, max-age=3600",
+//   "X-AgentDoor-Version": "1.0"
+// }
+```
+
+**HTTP response:**
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: public, max-age=3600
+X-AgentDoor-Version: 1.0
+
+{
+  "agentdoor_version": "1.0",
+  "service_name": "My API",
+  ...
+}
+```
+
+## Agent Discovery Flow
+
+Here's how agents discover and connect to your service:
+
+### Step 1: Fetch Discovery Document
+
+```typescript
+const response = await fetch('https://api.example.com/.well-known/agentdoor.json');
+const discovery = await response.json();
+
+console.log('Service:', discovery.service_name);
+console.log('Available scopes:', discovery.scopes_available.map(s => s.id));
+console.log('Auth methods:', discovery.auth_methods);
+console.log('Payment:', discovery.payment ? 'Supported' : 'Not required');
+```
+
+### Step 2: Check Compatibility
+
+```typescript
+// Check if required scopes are available
+const requiredScopes = ['weather.read', 'weather.write'];
+const availableScopes = discovery.scopes_available.map(s => s.id);
+const hasAllScopes = requiredScopes.every(s => availableScopes.includes(s));
+
+if (!hasAllScopes) {
+  throw new Error('Service does not support required scopes');
+}
+
+// Check if agent supports any of the auth methods
+const supportedAuthMethods = ['ed25519-challenge', 'jwt'];
+const hasCompatibleAuth = discovery.auth_methods.some(
+  method => supportedAuthMethods.includes(method)
+);
+
+if (!hasCompatibleAuth) {
+  throw new Error('No compatible authentication method');
+}
+
+// Check payment requirements
+if (discovery.payment && !agentHasX402Wallet) {
+  console.warn('Service requires x402 payment, but agent has no wallet');
+}
+```
+
+### Step 3: Estimate Costs
+
+```typescript
+// Parse pricing from discovery document
+const pricing = {};
+for (const scope of discovery.scopes_available) {
+  if (scope.price) {
+    pricing[scope.id] = scope.price;
+  }
+}
+
+console.log('Pricing:', pricing);
+// { "weather.read": "$0.001/req", "weather.write": "$0.005/req" }
+
+// Estimate cost for 1000 requests
+const estimatedRequests = 1000;
+const costPerRequest = 0.001; // $0.001 from pricing
+const totalCost = estimatedRequests * costPerRequest;
+console.log(`Estimated cost for ${estimatedRequests} requests: $${totalCost}`);
+```
+
+### Step 4: Register
+
+```typescript
+// Build registration URL from discovery document
+const registrationUrl = new URL(
+  discovery.registration_endpoint,
+  'https://api.example.com'
+).href;
+
+const response = await fetch(registrationUrl, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    public_key: agent.publicKey,
+    scopes_requested: ['weather.read'],
+    x402_wallet: agent.walletAddress  // If payment is required
+  })
+});
+
+const { agent_id, challenge } = await response.json();
+// Registration flow continues...
+```
+
+<Info>
+The AgentDoor SDK handles **all of this automatically**. Agents just call `agent.connect('https://api.example.com')` and discovery happens transparently.
+</Info>
+
+## Validating Discovery Documents
+
+You can validate discovery documents from remote services:
+
+```typescript
+import { validateDiscoveryDocument } from '@agentdoor/core';
+
+const response = await fetch('https://api.example.com/.well-known/agentdoor.json');
+const doc = await response.json();
+
+const { valid, errors } = validateDiscoveryDocument(doc);
+
+if (!valid) {
+  console.error('Invalid discovery document:', errors);
+  // [
+  //   "Missing or invalid 'service_name'",
+  //   "scopes_available[0]: missing or invalid 'id'"
+  // ]
+} else {
+  console.log('Valid discovery document');
+}
+```
+
+## Cross-Protocol Auto-Generation
+
+One AgentDoor integration auto-generates companion protocol files:
+
+| File | Protocol | Status |
+|------|----------|--------|
+| `/.well-known/agentdoor.json` | AgentDoor | Primary |
+| `/.well-known/agent-card.json` | A2A (Google) | Auto-generated |
+| `/.well-known/oauth-authorization-server` | OAuth 2.1 | Optional |
+
+### A2A Agent Card
+
+If `companion.a2aAgentCard` is enabled, AgentDoor generates a Google A2A-compatible agent card:
+
+```json
+{
+  "schema_version": "1.0",
+  "name": "Weather API",
+  "description": "Real-time weather data and forecasts",
+  "url": "https://api.example.com",
+  "capabilities": [
+    { "id": "weather.read", "description": "Read weather data" },
+    { "id": "weather.write", "description": "Submit weather observations" }
+  ],
+  "authentication": {
+    "schemes": ["bearer"],
+    "credentials": "/agentdoor/register"
+  },
+  "protocols": ["agentdoor", "a2a"]
+}
+```
+
+**Configuration:**
+
+```typescript
+const config = {
+  scopes: [...],
+  companion: {
+    a2aAgentCard: true  // Enable A2A agent card generation
+  }
+};
+```
+
+### MCP Server Endpoint
+
+If `companion.mcpServer` is enabled, AgentDoor exposes an MCP-compatible endpoint at `/mcp`:
+
+```typescript
+const config = {
+  scopes: [...],
+  companion: {
+    mcpServer: true  // Enable MCP server endpoint
+  }
+};
+```
+
+Agents using Anthropic's Model Context Protocol can discover and connect to your API.
+
+## Caching Recommendations
+
+Discovery documents change infrequently. Set aggressive cache headers:
+
+```typescript
+// Default cache control
+Cache-Control: public, max-age=3600  // 1 hour
+
+// For stable production APIs
+Cache-Control: public, max-age=86400  // 24 hours
+
+// For frequently changing dev environments
+Cache-Control: public, max-age=60  // 1 minute
+```
+
+**Agent-side caching:**
+
+```typescript
+// Cache discovery documents for 1 hour
+const cache = new Map<string, { doc: DiscoveryDocument; expiresAt: number }>();
+
+async function getDiscovery(baseUrl: string): Promise<DiscoveryDocument> {
+  const cached = cache.get(baseUrl);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.doc;
+  }
+  
+  const response = await fetch(`${baseUrl}/.well-known/agentdoor.json`);
+  const doc = await response.json();
+  
+  cache.set(baseUrl, {
+    doc,
+    expiresAt: Date.now() + 3600_000  // 1 hour
+  });
+  
+  return doc;
+}
+```
+
+## Security Considerations
+
+<Warning>
+Discovery documents are **public**. Do not include:
+- Secrets or API keys
+- Internal infrastructure details
+- Sensitive pricing information
+- Customer data or PII
+</Warning>
+
+**What to include:**
+- Public scope descriptions
+- Published pricing (same as your website)
+- Public-facing endpoint paths
+- Supported auth methods
+- Contact information
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/concepts/authentication">
+    Learn how agents authenticate after discovery
+  </Card>
+  <Card title="Agent Detection" icon="robot" href="/concepts/agent-detection">
+    Understand how AgentDoor identifies agent traffic
+  </Card>
+</CardGroup>

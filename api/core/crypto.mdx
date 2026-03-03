@@ -1,0 +1,378 @@
+---
+title: Cryptography
+description: Cryptographic operations for key generation, signing, and verification
+---
+
+The `@agentdoor/core` crypto module provides Ed25519 and secp256k1 cryptographic operations for agent authentication, including key generation, signing, verification, and wallet signature support.
+
+## Ed25519 Operations
+
+### generateKeypair
+
+Generate a new Ed25519 keypair for agent registration.
+
+```typescript
+import { generateKeypair } from "@agentdoor/core";
+
+const keypair = generateKeypair();
+console.log(keypair.publicKey);  // Base64-encoded 32-byte public key
+console.log(keypair.secretKey);  // Base64-encoded 64-byte secret key
+```
+
+<ResponseField name="returns" type="Keypair">
+  An Ed25519 keypair with base64-encoded keys.
+  
+  <Expandable title="Keypair properties">
+    <ResponseField name="publicKey" type="string">
+      Base64-encoded 32-byte Ed25519 public key.
+    </ResponseField>
+    
+    <ResponseField name="secretKey" type="string">
+      Base64-encoded 64-byte Ed25519 secret key. Keep this secure!
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Implementation:** Uses `tweetnacl`'s cryptographically secure random byte generation.
+
+### signChallenge
+
+Sign a challenge message using an Ed25519 secret key.
+
+```typescript
+import { signChallenge } from "@agentdoor/core";
+
+const message = "agentdoor:register:ag_abc123:1234567890:random_nonce";
+const signature = signChallenge(message, secretKeyBase64);
+// Returns: Base64-encoded 64-byte signature
+```
+
+<ParamField path="message" type="string" required>
+  The challenge message string to sign.
+</ParamField>
+
+<ParamField path="secretKeyBase64" type="string" required>
+  Base64-encoded 64-byte Ed25519 secret key.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  Base64-encoded 64-byte Ed25519 signature.
+</ResponseField>
+
+### verifySignature
+
+Verify an Ed25519 signature on a message.
+
+```typescript
+import { verifySignature } from "@agentdoor/core";
+
+const isValid = verifySignature(
+  message,
+  signatureBase64,
+  publicKeyBase64
+);
+
+if (isValid) {
+  console.log("Signature is valid");
+} else {
+  console.log("Signature is invalid");
+}
+```
+
+<ParamField path="message" type="string" required>
+  The original message string that was signed.
+</ParamField>
+
+<ParamField path="signatureBase64" type="string" required>
+  Base64-encoded 64-byte Ed25519 signature.
+</ParamField>
+
+<ParamField path="publicKeyBase64" type="string" required>
+  Base64-encoded 32-byte Ed25519 public key.
+</ParamField>
+
+<ResponseField name="returns" type="boolean">
+  `true` if the signature is valid, `false` otherwise.
+</ResponseField>
+
+**Error Handling:** Returns `false` for any decoding errors or invalid key/signature lengths. Never throws.
+
+## secp256k1 Wallet Operations
+
+### verifyWalletSignature
+
+Verify a secp256k1 signature, typically from an x402 wallet. This allows agents to authenticate using their blockchain wallet keys.
+
+```typescript
+import { verifyWalletSignature } from "@agentdoor/core";
+
+const isValid = verifyWalletSignature(
+  message,
+  signatureHex,
+  publicKeyHex
+);
+```
+
+<ParamField path="message" type="string" required>
+  The original message string that was signed.
+</ParamField>
+
+<ParamField path="signatureHex" type="string" required>
+  Hex-encoded secp256k1 signature (64 bytes / 128 hex characters).
+</ParamField>
+
+<ParamField path="publicKeyHex" type="string" required>
+  Hex-encoded secp256k1 public key (33 bytes compressed or 65 bytes uncompressed).
+</ParamField>
+
+<ResponseField name="returns" type="boolean">
+  `true` if the signature is valid.
+</ResponseField>
+
+**Note:** The message is hashed with SHA-256 before verification, following standard secp256k1 practices.
+
+### publicKeyToAddress
+
+Derive an Ethereum-style address from a secp256k1 public key.
+
+```typescript
+import { publicKeyToAddress } from "@agentdoor/core";
+
+const address = publicKeyToAddress(publicKeyHex);
+console.log(address); // "0x..."
+```
+
+<ParamField path="publicKeyHex" type="string" required>
+  Hex-encoded secp256k1 public key.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  Hex address string prefixed with `"0x"`.
+</ResponseField>
+
+**Note:** This is a simplified implementation. For full EIP-55 checksumming, use a dedicated library like `ethers.js`.
+
+## ID & Key Generation
+
+### generateAgentId
+
+Generate a unique agent ID.
+
+```typescript
+import { generateAgentId } from "@agentdoor/core";
+
+const agentId = generateAgentId();
+console.log(agentId); // "ag_V1StGXR8_Z5jdHi6B"
+```
+
+<ResponseField name="returns" type="string">
+  Agent ID in the format `ag_{nanoid}` (21-character nanoid).
+</ResponseField>
+
+### generateApiKey
+
+Generate a unique API key for an agent.
+
+```typescript
+import { generateApiKey } from "@agentdoor/core";
+
+const liveKey = generateApiKey("live");
+console.log(liveKey); // "agk_live_..."
+
+const testKey = generateApiKey("test");
+console.log(testKey); // "agk_test_..."
+```
+
+<ParamField path="mode" type="'live' | 'test'">
+  Key mode. Defaults to `"live"`.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  The raw API key string. This should only be returned to the agent once, then hashed for storage.
+</ResponseField>
+
+**Security:** The raw API key contains 32 characters of random data from `nanoid`. Store only the hash using `hashApiKey()`.
+
+### hashApiKey
+
+Hash an API key using SHA-256 for secure storage.
+
+```typescript
+import { generateApiKey, hashApiKey } from "@agentdoor/core";
+
+const apiKey = generateApiKey("live");
+const hash = hashApiKey(apiKey);
+
+// Store 'hash' in database, return 'apiKey' to agent (once)
+await store.createAgent({
+  // ...
+  apiKeyHash: hash
+});
+
+return { api_key: apiKey }; // Only returned once
+```
+
+<ParamField path="apiKey" type="string" required>
+  The raw API key string.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  Hex-encoded SHA-256 hash of the API key.
+</ResponseField>
+
+### generateNonce
+
+Generate a cryptographically random nonce for challenges.
+
+```typescript
+import { generateNonce } from "@agentdoor/core";
+
+const nonce = generateNonce(); // Default: 32 characters
+const shortNonce = generateNonce(16);
+```
+
+<ParamField path="length" type="number">
+  Nonce length in characters. Defaults to 32.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  URL-safe random string generated by `nanoid`.
+</ResponseField>
+
+## Hashing Utilities
+
+### sha256
+
+Compute SHA-256 hash of a string asynchronously using Web Crypto API.
+
+```typescript
+import { sha256 } from "@agentdoor/core";
+
+const hash = await sha256("hello world");
+console.log(hash); // Hex-encoded hash string
+```
+
+<ParamField path="input" type="string" required>
+  String to hash.
+</ParamField>
+
+<ResponseField name="returns" type="Promise<string>">
+  Hex-encoded SHA-256 hash.
+</ResponseField>
+
+**Implementation:** Uses `crypto.subtle.digest()` when available. Falls back to synchronous truncated-SHA-512 in environments without Web Crypto.
+
+### sha256Sync
+
+Compute SHA-256 hash synchronously.
+
+```typescript
+import { sha256Sync } from "@agentdoor/core";
+
+const hash = sha256Sync("hello world");
+```
+
+<ParamField path="input" type="string" required>
+  String to hash.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  Hex-encoded hash string.
+</ResponseField>
+
+**Note:** Uses truncated SHA-512 from `tweetnacl` as a fallback when true SHA-256 is not available.
+
+## Encoding Utilities
+
+### bytesToHex
+
+Convert a Uint8Array to a hex string.
+
+```typescript
+import { bytesToHex } from "@agentdoor/core";
+
+const bytes = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+const hex = bytesToHex(bytes);
+console.log(hex); // "48656c6c6f"
+```
+
+### hexToBytes
+
+Convert a hex string to a Uint8Array.
+
+```typescript
+import { hexToBytes } from "@agentdoor/core";
+
+const bytes = hexToBytes("48656c6c6f");
+const bytes2 = hexToBytes("0x48656c6c6f"); // Also accepts 0x prefix
+```
+
+### Base64 Encoding
+
+Re-exported from `tweetnacl-util` for convenience:
+
+```typescript
+import { encodeBase64, decodeBase64, decodeUTF8 } from "@agentdoor/core";
+
+const encoded = encodeBase64(new Uint8Array([1, 2, 3]));
+const decoded = decodeBase64(encoded);
+const utf8Bytes = decodeUTF8("hello");
+```
+
+## Complete Example: Agent Registration Flow
+
+```typescript
+import {
+  generateKeypair,
+  generateAgentId,
+  generateApiKey,
+  generateNonce,
+  signChallenge,
+  verifySignature,
+  hashApiKey
+} from "@agentdoor/core";
+
+// 1. Agent generates keypair locally
+const { publicKey, secretKey } = generateKeypair();
+
+// 2. Server receives registration request
+const agentId = generateAgentId();
+const nonce = generateNonce();
+const message = `agentdoor:register:${agentId}:${Date.now()}:${nonce}`;
+
+// 3. Server sends challenge to agent
+return { agent_id: agentId, challenge: { nonce, message } };
+
+// 4. Agent signs the challenge
+const signature = signChallenge(message, secretKey);
+
+// 5. Server verifies signature
+const isValid = verifySignature(message, signature, publicKey);
+
+if (!isValid) {
+  throw new Error("Invalid signature");
+}
+
+// 6. Server generates and stores API key
+const apiKey = generateApiKey("live");
+const apiKeyHash = hashApiKey(apiKey);
+
+await store.createAgent({
+  id: agentId,
+  publicKey,
+  apiKeyHash,
+  // ...
+});
+
+// 7. Return API key to agent (only once!)
+return { agent_id: agentId, api_key: apiKey };
+```
+
+## Security Best Practices
+
+1. **Never log secret keys or API keys** - Only log agent IDs and public keys
+2. **Store only hashed API keys** - Use `hashApiKey()` before storage
+3. **Return API keys only once** - At registration, then never again
+4. **Validate key lengths** - All functions validate input lengths automatically
+5. **Use Ed25519 for new implementations** - Faster and more modern than secp256k1
+6. **Keep nonces random** - Use `generateNonce()`, never hardcode or reuse

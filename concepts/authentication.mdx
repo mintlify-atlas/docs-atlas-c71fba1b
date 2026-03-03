@@ -1,0 +1,515 @@
+---
+title: Authentication
+description: Deep dive into Ed25519 challenge-response authentication and JWT token handling
+---
+
+AgentDoor uses **Ed25519 challenge-response authentication** as its primary security mechanism, providing cryptographic proof of identity without transmitting private keys. Once authenticated, agents receive **short-lived JWT tokens** for efficient subsequent requests.
+
+## Why Ed25519?
+
+AgentDoor chose Ed25519 over other authentication methods for several critical reasons:
+
+<AccordionGroup>
+  <Accordion title="🚀 Speed: ~1ms signature verification">
+    Ed25519 signatures verify in under 1 millisecond on modern hardware. This makes AgentDoor's auth middleware add less than 2ms to request latency.
+  </Accordion>
+  
+  <Accordion title="🔒 Security: 128-bit security level">
+    Ed25519 provides 128-bit security (equivalent to RSA-3072) with much smaller keys. Public keys are 32 bytes, signatures are 64 bytes.
+  </Accordion>
+  
+  <Accordion title="📦 Zero Native Dependencies">
+    AgentDoor uses `tweetnacl` - a pure JavaScript implementation. No `node-gyp`, no native compilation. Works everywhere: Node.js, Deno, Bun, Cloudflare Workers, browsers.
+  </Accordion>
+  
+  <Accordion title="🛡️ Private Key Never Transmitted">
+    Unlike OAuth tokens or API keys, the agent's private key **never leaves the agent's environment**. Only signatures are sent over the network.
+  </Accordion>
+</AccordionGroup>
+
+## Three Authentication Modes
+
+AgentDoor supports three auth modes for different use cases:
+
+### 1. Ed25519 Challenge-Response (Default)
+
+**Best for:** Maximum security, zero-trust environments
+
+**How it works:**
+
+1. Server sends a time-limited challenge message
+2. Agent signs the challenge with its Ed25519 private key
+3. Server verifies the signature using the agent's stored public key
+4. Server issues a JWT token for subsequent requests
+
+**Code example:**
+
+```typescript
+import { generateKeypair, signChallenge, verifySignature } from '@agentdoor/core';
+
+// 1. Agent generates a keypair
+const keypair = generateKeypair();
+// Returns: { publicKey: "base64...", secretKey: "base64..." }
+
+// 2. Agent registers with public key
+const registration = await fetch('/agentdoor/register', {
+  method: 'POST',
+  body: JSON.stringify({
+    public_key: keypair.publicKey,
+    scopes_requested: ['data.read']
+  })
+});
+
+const { agent_id, challenge } = await registration.json();
+
+// 3. Agent signs the challenge
+const signature = signChallenge(
+  challenge.message,  // "agentdoor:register:ag_xxx:timestamp:nonce"
+  keypair.secretKey
+);
+
+// 4. Agent submits signature
+const verification = await fetch('/agentdoor/register/verify', {
+  method: 'POST',
+  body: JSON.stringify({ agent_id, signature })
+});
+
+const { api_key, token } = await verification.json();
+
+// 5. Server verifies signature
+const isValid = verifySignature(
+  challenge.message,
+  signature,
+  keypair.publicKey
+);
+// Returns: true (signature is valid)
+```
+
+**Challenge message format:**
+
+```
+agentdoor:register:{agent_id}:{timestamp}:{nonce}
+```
+
+Example:
+```
+agentdoor:register:ag_V1StGXR8_Z5jdHi6B:1709481600:Xy9k3mP7qR2sT5vW8zA1bC4dE6fG9hJ0
+```
+
+**Type definitions:**
+
+```typescript
+interface ChallengeData {
+  agentId: string;           // "ag_V1StGXR8_Z5jdHi6B"
+  nonce: string;             // Random 32-byte base64 string
+  message: string;           // Full challenge message to sign
+  expiresAt: Date;           // Challenge expiration (default: 5 min)
+  createdAt: Date;           // When challenge was created
+}
+```
+
+### 2. x402 Wallet Identity (Optional)
+
+**Best for:** Agents with existing x402 wallets, unified payment+auth identity
+
+**How it works:**
+
+1. Agent provides their x402 wallet address (Ethereum, Solana, etc.)
+2. Agent signs challenges with their wallet's secp256k1 key
+3. Wallet address becomes the agent's identity
+4. Payments and authentication use the same key
+
+**Code example:**
+
+```typescript
+import { verifyWalletSignature, publicKeyToAddress } from '@agentdoor/core';
+
+// Registration with x402 wallet
+const registration = await fetch('/agentdoor/register', {
+  method: 'POST',
+  body: JSON.stringify({
+    public_key: keypair.publicKey,     // Ed25519 (or secp256k1)
+    x402_wallet: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+    scopes_requested: ['data.read']
+  })
+});
+
+// Server verifies wallet signature
+const isValid = verifyWalletSignature(
+  message,                 // Challenge message
+  signatureHex,           // Hex-encoded secp256k1 signature
+  walletPublicKeyHex      // Hex-encoded secp256k1 public key
+);
+```
+
+**Derive address from public key:**
+
+```typescript
+const address = publicKeyToAddress(publicKeyHex);
+// Returns: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+```
+
+### 3. JWT Token (After Initial Auth)
+
+**Best for:** Subsequent requests after initial authentication, caching
+
+**How it works:**
+
+1. Agent receives JWT after successful challenge-response
+2. Agent includes JWT in `Authorization: Bearer {token}` header
+3. Server verifies JWT signature and expiration
+4. Server extracts agent context from JWT claims
+
+**JWT Claims:**
+
+```typescript
+interface AgentDoorJWTClaims {
+  agent_id: string;                  // "ag_V1StGXR8_Z5jdHi6B"
+  scopes: string[];                  // ["data.read", "data.write"]
+  public_key: string;                // Base64-encoded public key
+  metadata?: Record<string, string>; // { framework: "langchain", version: "0.1.0" }
+  reputation?: number;               // 0-100 score
+}
+```
+
+**Code example:**
+
+```typescript
+import { issueToken, verifyToken } from '@agentdoor/core';
+
+// Server issues token after successful auth
+const token = await issueToken(
+  agentContext,    // Agent ID, scopes, public key, metadata
+  jwtSecret,       // HMAC secret (auto-generated or configured)
+  '1h',            // Expiration: 1 hour
+  'agentdoor'      // Issuer
+);
+
+// Agent uses token
+const response = await fetch('/api/protected', {
+  headers: { 'Authorization': `Bearer ${token}` }
+});
+
+// Server verifies token
+const { agent, expiresAt, issuedAt } = await verifyToken(
+  token,
+  jwtSecret,
+  'agentdoor'  // Expected issuer
+);
+```
+
+**Token structure (decoded):**
+
+```json
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+{
+  "agent_id": "ag_V1StGXR8_Z5jdHi6B",
+  "scopes": ["data.read"],
+  "public_key": "Xy9k3mP7qR2sT5vW...",
+  "metadata": { "framework": "langchain", "version": "0.1.0" },
+  "reputation": 85,
+  "sub": "ag_V1StGXR8_Z5jdHi6B",
+  "iat": 1709481600,
+  "exp": 1709485200,
+  "iss": "agentdoor"
+}
+```
+
+## Token Refresh Flow
+
+JWTs are short-lived (default: 1 hour). When a token expires, agents refresh via signature-based auth.
+
+**Why not refresh tokens?**
+
+Typical refresh tokens are bearer tokens—if stolen, an attacker has unlimited access until revocation. AgentDoor's refresh requires **cryptographic proof** on every renewal:
+
+| | Typical Refresh Token | AgentDoor `/agentdoor/auth` |
+|---|---|---|
+| **Stolen token risk** | Refresh token = unlimited access | Stolen JWT alone can't refresh |
+| **Proof of identity** | None (just present the token) | Ed25519 signature every time |
+| **Security model** | Trust-the-token | Zero-trust (prove key ownership) |
+
+**Refresh flow:**
+
+```typescript
+import { buildAuthMessage, signChallenge } from '@agentdoor/core';
+
+// 1. Agent's JWT has expired
+const isExpired = Date.now() > expiresAt.getTime();
+
+if (isExpired) {
+  // 2. Agent builds a fresh auth message
+  const timestamp = new Date().toISOString();
+  const message = buildAuthMessage(agent_id, timestamp);
+  // Returns: "agentdoor:auth:ag_V1StGXR8_Z5jdHi6B:2024-03-03T12:00:00.000Z"
+  
+  // 3. Agent signs the message
+  const signature = signChallenge(message, keypair.secretKey);
+  
+  // 4. Agent requests new token
+  const authResponse = await fetch('/agentdoor/auth', {
+    method: 'POST',
+    body: JSON.stringify({
+      agent_id: agent_id,
+      timestamp: timestamp,
+      signature: signature
+    })
+  });
+  
+  const { token, expires_at } = await authResponse.json();
+  // New JWT issued, valid for another hour
+}
+```
+
+**Server-side verification:**
+
+```typescript
+import { verifyAuthRequest } from '@agentdoor/core';
+
+// Server verifies the auth request
+verifyAuthRequest(
+  agent_id,
+  timestamp,
+  signature,
+  storedPublicKey,
+  300  // Max age: 5 minutes (prevents replay attacks)
+);
+// Throws if signature invalid or timestamp too old
+
+// Issue new token
+const newToken = await issueToken(agentContext, jwtSecret, '1h');
+return { token: newToken, expires_at: new Date(Date.now() + 3600000) };
+```
+
+<Info>
+The AgentDoor SDK handles token refresh **automatically**. Agents never need to manually check expiration or trigger refresh.
+</Info>
+
+## Challenge Security
+
+### Time-Limited Challenges
+
+All challenges expire after a configurable duration (default: 5 minutes):
+
+```typescript
+import { createChallenge, isChallengeExpired } from '@agentdoor/core';
+
+// Create challenge
+const challenge = createChallenge(
+  'ag_V1StGXR8_Z5jdHi6B',
+  300  // Expires in 300 seconds (5 minutes)
+);
+
+// Check expiry
+if (isChallengeExpired(challenge)) {
+  throw new ChallengeExpiredError('Challenge expired. Request a new one.');
+}
+```
+
+**Challenge expiry prevents:**
+- Replay attacks (old signatures can't be reused)
+- Stale challenge accumulation in storage
+- Delayed verification attempts
+
+### Nonce Uniqueness
+
+Every challenge includes a cryptographically random 32-byte nonce:
+
+```typescript
+import { generateNonce } from '@agentdoor/core';
+
+const nonce = generateNonce(32);
+// Returns: "Xy9k3mP7qR2sT5vW8zA1bC4dE6fG9hJ0kL2m"
+```
+
+Nonces ensure:
+- No two challenges have the same message
+- Signatures can't be reused across registrations
+- Pre-computed signature attacks are impossible
+
+### Timestamp Validation
+
+Auth requests include ISO 8601 timestamps. Server validates:
+
+```typescript
+// Check timestamp freshness
+const requestTime = new Date(timestamp).getTime();
+const now = Date.now();
+const ageMs = now - requestTime;
+
+// Reject if too old (default: 5 minutes)
+if (ageMs > 300_000) {
+  throw new ChallengeExpiredError('Auth request too old');
+}
+
+// Allow 30s clock skew into the future
+if (ageMs < -30_000) {
+  throw new InvalidSignatureError('Timestamp is in the future');
+}
+```
+
+## API Key Authentication
+
+Agents can also authenticate using long-lived API keys (alternative to JWT).
+
+**When to use API keys:**
+- Long-running batch jobs
+- Serverless functions (no state to cache JWT)
+- Legacy integrations
+
+**API key format:**
+
+```
+agk_live_{32_random_chars}    # Production
+agk_test_{32_random_chars}    # Development/testing
+```
+
+Example: `agk_live_Xy9k3mP7qR2sT5vW8zA1bC4dE6fG9hJ0`
+
+**Generation and storage:**
+
+```typescript
+import { generateApiKey, hashApiKey } from '@agentdoor/core';
+
+// Generate API key
+const apiKey = generateApiKey('live');
+// Returns: "agk_live_Xy9k3mP7qR2sT5vW8zA1bC4dE6fG9hJ0kL2m"
+
+// Hash for storage (SHA-256)
+const hash = hashApiKey(apiKey);
+// Returns: "a1b2c3d4e5f6..." (64-char hex)
+
+// Store only the hash
+await storage.createAgent({
+  id: agent_id,
+  apiKeyHash: hash,  // Never store plaintext
+  // ...
+});
+
+// Return plaintext key to agent ONCE
+return { api_key: apiKey };
+```
+
+**Usage:**
+
+```typescript
+// Agent includes API key in Authorization header
+const response = await fetch('/api/data', {
+  headers: {
+    'Authorization': `Bearer agk_live_Xy9k3mP7qR2sT5vW8zA1bC4dE6fG9hJ0`
+  }
+});
+```
+
+**Server verification:**
+
+```typescript
+// Middleware detects API key prefix
+if (authHeader.startsWith('Bearer agk_')) {
+  const providedKey = authHeader.substring(7);
+  const hash = hashApiKey(providedKey);
+  
+  // Lookup agent by key hash
+  const agent = await storage.getAgentByApiKeyHash(hash);
+  
+  if (!agent) {
+    throw new InvalidApiKeyError('Invalid API key');
+  }
+  
+  if (agent.status !== 'active') {
+    throw new AgentSuspendedError('Agent account suspended');
+  }
+  
+  // Attach agent context to request
+  req.agent = agent;
+  req.isAgent = true;
+}
+```
+
+<Warning>
+API keys are shown **once** at registration. If lost, agents must re-register. AgentDoor does not support API key rotation (use JWT refresh instead).
+</Warning>
+
+## Comparison to OAuth 2.1
+
+Why not just use OAuth? Here's how AgentDoor compares:
+
+| Feature | OAuth 2.1 | AgentDoor |
+|---------|-----------|----------|
+| **Human involvement** | Consent screen + browser | Zero. Fully headless. |
+| **Round-trips** | 5+ (authorize, redirect, token exchange) | 2 (register, verify) |
+| **Speed** | Seconds (browser redirects) | < 500ms total |
+| **Private key exposure** | Tokens sent every request | Private key never transmitted |
+| **Setup complexity** | Client ID, client secret, redirect URI | Just public key |
+| **Best for** | Human users, third-party apps | AI agents, M2M communication |
+
+**OAuth flow (simplified):**
+
+```
+1. Redirect to authorization server
+2. User logs in (browser)
+3. User grants consent (browser)
+4. Redirect back with auth code
+5. Exchange code for access token
+6. Use access token
+```
+
+**AgentDoor flow:**
+
+```
+1. POST public key → receive challenge
+2. POST signature → receive token
+3. Use token
+```
+
+## Type Reference
+
+Key TypeScript interfaces for authentication:
+
+```typescript
+// Keypair (Ed25519)
+interface Keypair {
+  publicKey: string;   // Base64-encoded 32-byte public key
+  secretKey: string;   // Base64-encoded 64-byte secret key
+}
+
+// Challenge data
+interface ChallengeData {
+  agentId: string;
+  nonce: string;
+  message: string;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+// Agent context (attached to requests)
+interface AgentContext {
+  id: string;
+  publicKey: string;
+  scopes: string[];
+  rateLimit: RateLimitConfig;
+  reputation?: number;
+  metadata: Record<string, string>;
+}
+
+// JWT token verification result
+interface TokenVerifyResult {
+  agent: AgentContext;
+  expiresAt: Date;
+  issuedAt: Date;
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Discovery Protocol" icon="compass" href="/concepts/discovery-protocol">
+    Learn how agents find your service capabilities
+  </Card>
+  <Card title="Payments" icon="credit-card" href="/concepts/payments">
+    Integrate x402 protocol for per-request payments
+  </Card>
+</CardGroup>

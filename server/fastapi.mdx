@@ -1,0 +1,431 @@
+---
+title: FastAPI (Python)
+description: Add AgentDoor to your FastAPI application
+---
+
+Integrate AgentDoor into your FastAPI app with the official Python adapter. The `agentdoor-fastapi` package provides middleware that handles agent discovery, registration, authentication, and dependency injection.
+
+## Installation
+
+<CodeGroup>
+
+```bash pip
+pip install agentdoor-fastapi
+```
+
+```bash poetry
+poetry add agentdoor-fastapi
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Import AgentDoor">
+
+```python
+from fastapi import Depends, FastAPI
+from agentdoor_fastapi import AgentDoor, AgentDoorConfig, AgentContext
+```
+
+</Step>
+
+<Step title="Initialize FastAPI and AgentDoor">
+
+```python
+app = FastAPI()
+
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="My API",
+        scopes=[
+            {"name": "read", "description": "Read access"},
+            {"name": "write", "description": "Write access"},
+        ],
+        token_ttl_seconds=3600,
+    ),
+)
+```
+
+</Step>
+
+<Step title="Protect routes with dependencies">
+
+```python
+@app.get("/api/protected")
+async def protected_route(
+    agent: AgentContext = Depends(gate.agent_required())
+):
+    return {
+        "message": f"Hello, {agent.agent_name}!",
+        "agent_id": agent.agent_id,
+        "scopes": agent.scopes,
+    }
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full FastAPI app with agent authentication:
+
+```python main.py
+from fastapi import Depends, FastAPI
+from agentdoor_fastapi import AgentDoor, AgentDoorConfig, AgentContext
+
+app = FastAPI(
+    title="AgentDoor Python Example",
+    description="A sample FastAPI app with AgentDoor agent authentication",
+)
+
+# Initialize AgentDoor
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="Python Example API",
+        scopes=[
+            {"name": "read", "description": "Read access to items"},
+            {"name": "write", "description": "Write access to items"},
+        ],
+        token_ttl_seconds=3600,
+    ),
+)
+
+# Sample data
+items = [
+    {"id": 1, "name": "Widget A", "price": 9.99, "in_stock": True},
+    {"id": 2, "name": "Widget B", "price": 19.99, "in_stock": True},
+    {"id": 3, "name": "Gadget C", "price": 49.99, "in_stock": False},
+]
+
+# Public endpoint
+@app.get("/api/items")
+async def list_items():
+    """Public endpoint -- no authentication required."""
+    return {"items": items, "total": len(items)}
+
+# Protected endpoint (any authenticated agent)
+@app.get("/api/protected")
+async def protected_data(
+    agent: AgentContext = Depends(gate.agent_required())
+):
+    """Protected endpoint -- requires a valid agent token."""
+    return {
+        "message": f"Hello, {agent.agent_name}!",
+        "agent_id": agent.agent_id,
+        "scopes": agent.scopes,
+        "items": items,
+    }
+
+# Scope-protected endpoint
+@app.get("/api/read-only")
+async def read_only(
+    agent: AgentContext = Depends(gate.agent_required(scopes=["read"]))
+):
+    """Protected endpoint -- requires the 'read' scope."""
+    return {
+        "agent_id": agent.agent_id,
+        "items": items,
+    }
+
+# Run with: uvicorn main:app --reload --port 3000
+```
+
+## How It Works
+
+The `AgentDoor` class:
+
+1. **Mounts discovery**: `GET /.well-known/agentdoor.json`
+2. **Mounts registration**: 
+   - `POST /agentdoor/register` (step 1: create challenge)
+   - `POST /agentdoor/register/verify` (step 2: verify signature)
+3. **Mounts auth**: `POST /agentdoor/auth` (issue bearer tokens)
+4. **Provides dependencies**: `gate.agent_required()` for route protection
+5. **Manages state**: In-memory or custom agent store
+
+## Advanced Configuration
+
+### Custom Route Prefix
+
+Change the default `/agentdoor` prefix:
+
+```python
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="My API",
+        scopes=[...],
+        route_prefix="/auth",  # Routes at /auth/register, /auth/auth, etc.
+    ),
+)
+```
+
+### Token TTL
+
+Customize bearer token lifetime:
+
+```python
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="My API",
+        scopes=[...],
+        token_ttl_seconds=7200,  # 2 hours
+    ),
+)
+```
+
+### Clock Drift Tolerance
+
+Adjust maximum allowed clock drift for signed timestamps:
+
+```python
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="My API",
+        scopes=[...],
+        max_timestamp_drift=600,  # 10 minutes
+    ),
+)
+```
+
+### Custom Agent Store
+
+Implement a custom store for persistent agent state:
+
+```python
+from agentdoor_fastapi.store import AgentStore
+
+class PostgresAgentStore(AgentStore):
+    async def create_pending_registration(self, ...):
+        # Store in Postgres
+        pass
+    
+    async def get_agent(self, agent_id: str):
+        # Retrieve from Postgres
+        pass
+    
+    # Implement other methods...
+
+store = PostgresAgentStore()
+
+gate = AgentDoor(
+    app,
+    config=AgentDoorConfig(
+        service_name="My API",
+        scopes=[...],
+        store=store,
+    ),
+)
+```
+
+## Dependency Injection
+
+### Basic Protection
+
+Require any authenticated agent:
+
+```python
+@app.get("/api/data")
+async def get_data(
+    agent: AgentContext = Depends(gate.agent_required())
+):
+    return {"agent_id": agent.agent_id}
+```
+
+### Scope Protection
+
+Require specific scopes:
+
+```python
+@app.post("/api/items")
+async def create_item(
+    agent: AgentContext = Depends(gate.agent_required(scopes=["write"]))
+):
+    # Agent must have "write" scope
+    return {"created": True}
+```
+
+### Multiple Scopes
+
+Require multiple scopes (agent must have all):
+
+```python
+@app.delete("/api/items/{item_id}")
+async def delete_item(
+    item_id: int,
+    agent: AgentContext = Depends(gate.agent_required(scopes=["write", "admin"]))
+):
+    # Agent must have both "write" and "admin" scopes
+    return {"deleted": item_id}
+```
+
+## Agent Context
+
+The `AgentContext` object provides agent information:
+
+```python
+class AgentContext:
+    agent_id: str          # Unique agent ID (e.g., "ag_abc123")
+    agent_name: str        # Human-readable agent name
+    scopes: list[str]      # Granted scopes
+```
+
+Access it in route handlers:
+
+```python
+@app.get("/api/profile")
+async def get_profile(
+    agent: AgentContext = Depends(gate.agent_required())
+):
+    return {
+        "id": agent.agent_id,
+        "name": agent.agent_name,
+        "scopes": agent.scopes,
+    }
+```
+
+## API Documentation
+
+FastAPI automatically includes AgentDoor endpoints in the OpenAPI schema:
+
+- Visit `/docs` for Swagger UI
+- Visit `/redoc` for ReDoc
+
+AgentDoor endpoints are tagged with `"agentdoor"` for easy filtering.
+
+## Error Handling
+
+AgentDoor raises `HTTPException` for authentication failures:
+
+```python
+from fastapi import HTTPException
+
+# 401: Missing or invalid Authorization header
+# 401: Invalid or expired token
+# 403: Missing required scopes
+# 404: Unknown agent_id
+# 410: Challenge expired
+```
+
+Handle these with FastAPI's exception handlers:
+
+```python
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+        },
+    )
+```
+
+## API Reference
+
+### `AgentDoor(app, config)`
+
+Initializes AgentDoor and mounts routes onto a FastAPI app.
+
+**Parameters:**
+
+- `app`: FastAPI app instance
+- `config`: `AgentDoorConfig` instance
+
+**Properties:**
+
+- `store`: Underlying agent store
+- `config`: Current configuration
+
+**Methods:**
+
+- `agent_required(scopes=None)`: Returns a FastAPI dependency for route protection
+
+### `AgentDoorConfig`
+
+Configuration dataclass for AgentDoor.
+
+**Fields:**
+
+- `service_name`: Human-readable service name (default: `"AgentDoor Service"`)
+- `scopes`: List of scope definitions (default: `[]`)
+- `token_ttl_seconds`: Bearer token lifetime (default: `3600`)
+- `max_timestamp_drift`: Maximum clock drift in seconds (default: `300`)
+- `store`: Custom agent store (default: `None`, uses in-memory)
+- `route_prefix`: URL prefix for AgentDoor endpoints (default: `"/agentdoor"`)
+
+### `AgentContext`
+
+Agent information passed to route handlers.
+
+**Fields:**
+
+- `agent_id`: Unique agent ID
+- `agent_name`: Human-readable agent name
+- `scopes`: List of granted scopes
+
+## Running the Server
+
+Run with Uvicorn:
+
+```bash
+uvicorn main:app --reload --port 3000
+```
+
+Or with Gunicorn + Uvicorn workers:
+
+```bash
+gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:3000
+```
+
+<Note>
+The in-memory store is suitable for development. For production, implement a custom store backed by a database.
+</Note>
+
+## Testing
+
+Test agent authentication with FastAPI's test client:
+
+```python
+from fastapi.testclient import TestClient
+
+client = TestClient(app)
+
+def test_protected_endpoint():
+    # Register an agent
+    response = client.post(
+        "/agentdoor/register",
+        json={
+            "agent_name": "test-agent",
+            "public_key": "...",
+            "scopes": ["read"],
+        },
+    )
+    assert response.status_code == 201
+    
+    # Get bearer token
+    # (implementation depends on your auth flow)
+    
+    # Access protected endpoint
+    response = client.get(
+        "/api/protected",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+```
+
+## Next Steps
+
+- [Implement Custom Storage](/advanced/storage)
+- [Deploy with Docker](/deployment/railway)
+- [Monitor with Logging](/advanced/configuration)

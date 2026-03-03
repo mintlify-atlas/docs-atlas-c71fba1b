@@ -1,0 +1,581 @@
+---
+title: CLI
+description: AgentDoor command-line tool for setup, status checks, and key generation
+---
+
+## Overview
+
+The AgentDoor CLI provides commands for:
+
+- **init** - Interactive setup and OpenAPI import
+- **status** - Configuration validation and endpoint checks
+- **keygen** - Ed25519 keypair generation for agents
+
+## Installation
+
+```bash
+# Global installation
+npm install -g agentdoor
+
+# Or use with npx (no installation)
+npx agentdoor <command>
+```
+
+## Commands
+
+### init
+
+Initialize AgentDoor in your project with interactive prompts or OpenAPI auto-import.
+
+```bash
+agentdoor init
+```
+
+#### Interactive Mode
+
+Walks you through setup step-by-step:
+
+1. Framework selection (Next.js, Express, Hono, FastAPI)
+2. OpenAPI spec import (optional)
+3. Scope configuration
+4. Service metadata
+5. x402 payments setup
+
+**Generated files:**
+- `agentdoor.config.ts` - Configuration file
+- `public/.well-known/agentdoor.json` - Discovery document
+- `public/.well-known/agent-card.json` - A2A agent card
+
+**Example session:**
+
+```
+$ agentdoor init
+
+  AgentDoor Setup
+
+What framework are you using? (auto-detected: nextjs)
+  › Next.js (App Router)
+    Express.js
+    Hono
+    FastAPI (Python)
+    Other
+
+Do you have an OpenAPI spec? (y/N)
+› No
+
+Enter scope IDs (comma-separated, e.g. "data.read, data.write"):
+› data.read, data.write
+
+Service name:
+› My API
+
+Service description:
+› API with AgentDoor integration
+
+Enable x402 payments? (Y/n)
+› Yes
+
+Your x402 wallet address:
+› 0x1234567890abcdef...
+
+Preferred network:
+  › base
+    solana
+    ethereum
+    polygon
+
+  Generating files...
+
+  ✓ agentdoor.config.ts
+  ✓ public/.well-known/agentdoor.json
+  ✓ public/.well-known/agent-card.json
+
+  Next steps:
+
+  // middleware.ts
+  import { createAgentDoorMiddleware } from "@agentdoor/next";
+  import config from "./agentdoor.config";
+
+  export default createAgentDoorMiddleware(config);
+  export const config = { matcher: ["/(.*)"] };
+```
+
+#### OpenAPI Import
+
+Auto-generate configuration from an OpenAPI specification:
+
+```bash
+agentdoor init --from-openapi ./openapi.yaml
+```
+
+Features:
+- Parses OpenAPI 3.x specs (YAML or JSON)
+- Infers scopes from endpoint tags and paths
+- Suggests pricing based on HTTP methods
+- Filters out destructive operations (DELETE, admin endpoints) by default
+
+**Example:**
+
+```bash
+$ agentdoor init --from-openapi ./api-spec.yaml
+
+  AgentDoor Setup (from OpenAPI)
+
+  Reading OpenAPI spec: ./api-spec.yaml
+  Found 12 scopes:
+
+  ✓ data.read           GET     /api/data/*              $0.001/req
+  ✓ data.write          POST    /api/data                $0.01/req
+  ✓ analytics.read      GET     /api/analytics/*         $0.005/req
+  ⚠ skip admin.users    GET     /api/admin/users         $0.01/req
+  ⚠ skip data.delete    DELETE  /api/data/:id            $0.05/req
+
+  Generated agentdoor.config.ts
+  Generated public/.well-known/agentdoor.json
+  Generated public/.well-known/agent-card.json
+
+  Next: Add 3 lines to your server:
+
+  const agentdoor = require("@agentdoor/express");
+  const config = require("./agentdoor.config");
+  app.use(agentdoor(config));
+```
+
+#### Options
+
+```bash
+agentdoor init [options]
+
+--from-openapi <path>    Auto-import from OpenAPI spec file
+-o, --output <dir>       Output directory (default: current directory)
+-y, --yes                Accept all defaults (non-interactive)
+```
+
+**Examples:**
+
+```bash
+# Import from OpenAPI spec
+agentdoor init --from-openapi ./swagger.json
+
+# Output to specific directory
+agentdoor init --output ./backend
+
+# Non-interactive with defaults
+agentdoor init --yes
+```
+
+### status
+
+Check configuration files and test live endpoints.
+
+```bash
+agentdoor status
+```
+
+#### Local File Checks
+
+Validates local configuration:
+
+```
+$ agentdoor status
+
+  AgentDoor Status (Local)
+
+   ✓  Config          agentdoor.config.ts found
+   ✓  Discovery       agentdoor.json found at public/.well-known/agentdoor.json
+   ✓  A2A Card        agent-card.json found
+   ✓  Scopes          5 scopes configured
+   ✓  Payments        x402 payments enabled
+
+  All checks passed.
+```
+
+#### Remote Endpoint Checks
+
+Probe a running server:
+
+```bash
+agentdoor status --url http://localhost:3000
+```
+
+```
+$ agentdoor status --url http://localhost:3000
+
+  AgentDoor Status (Remote)
+
+   ✓  Discovery       /.well-known/agentdoor.json serving (200)
+   ✓  Scopes          5 scopes available
+   ✓  Registration    /api/agent/register (POST) responding (400)
+   ✓  Auth            /api/agent/auth (POST) responding (400)
+
+  Tip: 400 is expected for empty requests - endpoints are alive.
+```
+
+#### Options
+
+```bash
+agentdoor status [options]
+
+-u, --url <url>       Base URL of running server to probe
+-c, --config <path>   Path to agentdoor config file
+```
+
+**Examples:**
+
+```bash
+# Check local files only
+agentdoor status
+
+# Check remote server
+agentdoor status --url https://api.example.com
+
+# Use custom config location
+agentdoor status --config ./config/agentdoor.ts
+```
+
+### keygen
+
+Generate Ed25519 keypairs for agent authentication.
+
+```bash
+agentdoor keygen
+```
+
+#### Output
+
+```
+$ agentdoor keygen
+
+  AgentDoor Keygen
+
+  Generating Ed25519 keypair...
+
+  Keypair saved to: /Users/you/.agentdoor/keys.json
+  Public key: 6LmP4ZqXKh9vJ2wN8bT3sC1mR5dQ7xY...
+  Fingerprint: a3f7c9e2d4b1f8a6
+
+  ⚠ Never share your private key!
+```
+
+#### Default Location
+
+Keypairs are saved to `~/.agentdoor/keys.json` with restrictive permissions (0600).
+
+**File format (JSON):**
+
+```json
+{
+  "algorithm": "Ed25519",
+  "publicKey": "6LmP4ZqXKh9vJ2wN8bT3sC1mR5dQ7xY...",
+  "secretKey": "SECRET_KEY_BASE64...",
+  "createdAt": "2024-03-04T10:30:00.000Z",
+  "fingerprint": "a3f7c9e2d4b1f8a6"
+}
+```
+
+#### Options
+
+```bash
+agentdoor keygen [options]
+
+-o, --output <path>     Output path for keypair file
+-f, --force             Overwrite existing keypair
+--format <format>       Output format: json (default) or pem
+```
+
+**Examples:**
+
+```bash
+# Generate with default location
+agentdoor keygen
+
+# Save to custom location
+agentdoor keygen --output ./keys/agent-key.json
+
+# Overwrite existing key
+agentdoor keygen --force
+
+# Generate PEM format
+agentdoor keygen --format pem --output ./keys/agent
+# Creates: agent.pub and agent.key
+```
+
+#### PEM Format
+
+Generate PEM-formatted keys for interoperability:
+
+```bash
+agentdoor keygen --format pem --output ./keys/agent
+```
+
+**Generated files:**
+
+`agent.pub` (public key):
+```
+-----BEGIN PUBLIC KEY-----
+6LmP4ZqXKh9vJ2wN8bT3sC1mR5dQ7xY...
+-----END PUBLIC KEY-----
+```
+
+`agent.key` (private key, mode 0600):
+```
+-----BEGIN PRIVATE KEY-----
+SECRET_KEY_BASE64...
+-----END PRIVATE KEY-----
+```
+
+## Configuration File
+
+The `agentdoor init` command generates a configuration file:
+
+**agentdoor.config.ts:**
+
+```typescript
+import type { AgentDoorConfig } from "@agentdoor/core";
+
+const config: AgentDoorConfig = {
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read access to data endpoints",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "data.write",
+      description: "Write access to data endpoints",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+
+  rateLimit: {
+    requests: 1000,
+    window: "1h",
+  },
+
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: "0x1234567890abcdef...",
+  },
+
+  storage: {
+    driver: "memory",
+  },
+
+  service: {
+    name: "My API",
+    description: "API with AgentDoor integration",
+  },
+};
+
+export default config;
+```
+
+## Discovery Document
+
+The `.well-known/agentdoor.json` discovery document:
+
+```json
+{
+  "agentdoor_version": "1.0",
+  "service_name": "My API",
+  "service_description": "API with AgentDoor integration",
+  "scopes_available": [
+    {
+      "id": "data.read",
+      "description": "Read access to data endpoints",
+      "price": "$0.001/req",
+      "rate_limit": "1000/hour"
+    },
+    {
+      "id": "data.write",
+      "description": "Write access to data endpoints",
+      "price": "$0.01/req",
+      "rate_limit": "100/hour"
+    }
+  ],
+  "registration_endpoint": "/api/agent/register",
+  "auth_endpoint": "/api/agent/auth",
+  "auth_methods": ["api_key", "jwt", "challenge"],
+  "payment": {
+    "protocol": "x402",
+    "networks": ["base"],
+    "currency": ["USDC"],
+    "payment_address": "0x1234567890abcdef..."
+  }
+}
+```
+
+## Framework Integration
+
+After running `agentdoor init`, integrate with your framework:
+
+### Next.js
+
+```typescript
+// middleware.ts
+import { createAgentDoorMiddleware } from "@agentdoor/next";
+import config from "./agentdoor.config";
+
+export default createAgentDoorMiddleware(config);
+export const config = { matcher: ["/(.*)"] };
+```
+
+### Express.js
+
+```typescript
+// server.ts
+import express from "express";
+import agentdoor from "@agentdoor/express";
+import config from "./agentdoor.config";
+
+const app = express();
+app.use(agentdoor(config));
+
+app.listen(3000);
+```
+
+### Hono
+
+```typescript
+// index.ts
+import { Hono } from "hono";
+import { agentdoor } from "@agentdoor/hono";
+import config from "./agentdoor.config";
+
+const app = new Hono();
+agentdoor(app, config);
+
+export default app;
+```
+
+## Agent Usage
+
+After generating keys with `agentdoor keygen`, agents can register:
+
+```typescript
+import { readFile } from "fs/promises";
+
+// Load keypair
+const keypair = JSON.parse(
+  await readFile("~/.agentdoor/keys.json", "utf-8")
+);
+
+// Register with service
+const response = await fetch("https://api.example.com/api/agent/register", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    public_key: keypair.publicKey,
+    scopes_requested: ["data.read"],
+    x402_wallet: "0x...",
+    metadata: { framework: "custom", version: "1.0.0" }
+  })
+});
+
+const { agent_id, api_key } = await response.json();
+
+// Make authenticated request
+const data = await fetch("https://api.example.com/api/data", {
+  headers: {
+    "Authorization": `Bearer ${api_key}`,
+    "X-Agent-ID": agent_id
+  }
+});
+```
+
+## Troubleshooting
+
+### Command not found
+
+Install CLI globally or use npx:
+
+```bash
+npm install -g agentdoor
+# or
+npx agentdoor <command>
+```
+
+### Config validation errors
+
+Run `agentdoor status` to see specific validation issues:
+
+```bash
+agentdoor status
+```
+
+### OpenAPI import failures
+
+Ensure your OpenAPI spec is valid:
+
+```bash
+npx @apidevtools/swagger-cli validate openapi.yaml
+```
+
+### Permission denied (keygen)
+
+Ensure write permissions to output directory:
+
+```bash
+mkdir -p ~/.agentdoor
+chmod 700 ~/.agentdoor
+```
+
+## CI/CD Integration
+
+### Generate config in CI
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      
+      - name: Generate AgentDoor config
+        run: |
+          npx agentdoor init --from-openapi ./openapi.yaml --yes
+      
+      - name: Validate config
+        run: npx agentdoor status
+      
+      - name: Deploy
+        run: npm run deploy
+```
+
+### Pre-deployment checks
+
+```yaml
+- name: Check AgentDoor status
+  run: |
+    npx agentdoor status --url ${{ secrets.STAGING_URL }}
+```
+
+## Best Practices
+
+1. **Version control**: Commit `agentdoor.config.ts` and discovery documents
+2. **Secrets**: Never commit wallet addresses or API keys
+3. **Environment variables**: Use env vars for sensitive config
+4. **Status checks**: Run `agentdoor status` before deployment
+5. **Key rotation**: Periodically regenerate agent keypairs
+6. **OpenAPI sync**: Re-run `init --from-openapi` when API changes
+7. **Documentation**: Update service description when adding scopes

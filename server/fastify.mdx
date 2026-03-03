@@ -1,0 +1,415 @@
+---
+title: Fastify
+description: Add AgentDoor to your Fastify application
+---
+
+Integrate AgentDoor into your Fastify app as a plugin with built-in JSON schema validation. The `@agentdoor/fastify` adapter provides full plugin support with request decorators.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/fastify @agentdoor/core fastify
+```
+
+```bash pnpm
+pnpm add @agentdoor/fastify @agentdoor/core fastify
+```
+
+```bash yarn
+yarn add @agentdoor/fastify @agentdoor/core fastify
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Import and initialize">
+
+```typescript
+import Fastify from "fastify";
+import { agentdoorPlugin } from "@agentdoor/fastify";
+
+const app = Fastify();
+```
+
+</Step>
+
+<Step title="Register the plugin">
+
+```typescript
+app.register(agentdoorPlugin, {
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "data.write",
+      description: "Write application data",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+});
+```
+
+</Step>
+
+<Step title="Access agent context">
+
+```typescript
+app.get("/api/data", async (request, reply) => {
+  if (request.isAgent) {
+    return { agentId: request.agent?.id };
+  }
+  return { data: "hello" };
+});
+
+await app.listen({ port: 3000 });
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full Fastify app with agent authentication:
+
+```typescript index.ts
+import Fastify from "fastify";
+import { agentdoorPlugin } from "@agentdoor/fastify";
+
+const app = Fastify({
+  logger: true,
+});
+
+// Register AgentDoor plugin
+app.register(agentdoorPlugin, {
+  scopes: [
+    {
+      id: "products.read",
+      description: "Read product catalog",
+      price: "$0.002/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "products.write",
+      description: "Create and update products",
+      price: "$0.02/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "products.read": "$0.002/req",
+    "products.write": "$0.02/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET || "0xYourWalletAddress",
+  },
+});
+
+// Sample data
+const products = [
+  { id: 1, name: "Widget A", price: 9.99, stock: 100 },
+  { id: 2, name: "Widget B", price: 19.99, stock: 50 },
+  { id: 3, name: "Gadget C", price: 49.99, stock: 25 },
+];
+
+// GET /api/products
+app.get("/api/products", async (request, reply) => {
+  const isAgent = request.isAgent;
+  const agent = request.agent;
+  
+  return {
+    products,
+    meta: {
+      total: products.length,
+      timestamp: new Date().toISOString(),
+      caller: isAgent ? `agent:${agent?.id}` : "human",
+    },
+  };
+});
+
+// POST /api/products
+app.post<{ Body: { name: string; price: number; stock: number } }>(
+  "/api/products",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["name", "price"],
+        properties: {
+          name: { type: "string" },
+          price: { type: "number" },
+          stock: { type: "number" },
+        },
+      },
+    },
+  },
+  async (request, reply) => {
+    const isAgent = request.isAgent;
+    const agent = request.agent;
+    
+    const newProduct = {
+      id: products.length + 1,
+      ...request.body,
+      stock: request.body.stock || 0,
+      createdBy: isAgent ? `agent:${agent?.id}` : "human",
+    };
+    
+    products.push(newProduct);
+    
+    return reply.status(201).send(newProduct);
+  }
+);
+
+await app.listen({ port: 3000 });
+console.log("Server running on http://localhost:3000");
+console.log("Discovery: http://localhost:3000/.well-known/agentdoor.json");
+```
+
+## How It Works
+
+The `agentdoorPlugin` automatically:
+
+1. **Decorates requests**: Adds `request.agent` and `request.isAgent`
+2. **Mounts discovery**: `GET /.well-known/agentdoor.json`
+3. **Mounts registration**: 
+   - `POST /agentdoor/register` (with JSON schema validation)
+   - `POST /agentdoor/register/verify`
+4. **Mounts auth**: `POST /agentdoor/auth`
+5. **Adds auth hook**: `onRequest` hook validates `Authorization` headers on protected routes
+
+## Advanced Configuration
+
+### Protected Paths
+
+Customize which paths require agent authentication:
+
+```typescript
+app.register(agentdoorPlugin, {
+  scopes: [/* ... */],
+  protectedPaths: ["/api"], // Only /api/* requires auth
+  passthrough: false, // Block unauthenticated requests (default)
+});
+```
+
+### Passthrough Mode
+
+Allow unauthenticated requests:
+
+```typescript
+app.register(agentdoorPlugin, {
+  scopes: [/* ... */],
+  passthrough: true, // Don't block unauthenticated requests
+});
+
+app.get("/api/data", async (request, reply) => {
+  if (!request.isAgent) {
+    return reply.status(401).send({ error: "Agent required" });
+  }
+  // Handle agent request
+});
+```
+
+### Base Path
+
+Mount AgentDoor routes under a custom prefix:
+
+```typescript
+app.register(agentdoorPlugin, {
+  scopes: [/* ... */],
+  basePath: "/v1", // Routes at /v1/agentdoor/*, /v1/.well-known/*
+});
+```
+
+### Request Lifecycle Hooks
+
+AgentDoor integrates seamlessly with Fastify's hook system:
+
+```typescript
+app.addHook("preHandler", async (request, reply) => {
+  if (request.isAgent) {
+    // Log agent requests
+    app.log.info(`Agent request from ${request.agent?.id}`);
+  }
+});
+```
+
+## Request Decorators
+
+AgentDoor decorates Fastify requests with agent context:
+
+```typescript
+declare module "fastify" {
+  interface FastifyRequest {
+    agent: AgentContext | null;
+    isAgent: boolean;
+  }
+}
+
+type AgentContext = {
+  id: string;
+  publicKey: string;
+  scopes: string[];
+  rateLimit: { requests: number; window: string };
+  metadata: Record<string, string>;
+};
+```
+
+Access them in route handlers:
+
+```typescript
+app.get("/api/data", async (request, reply) => {
+  const isAgent = request.isAgent;
+  const agent = request.agent;
+  
+  if (isAgent && agent) {
+    console.log(agent.id, agent.scopes);
+  }
+});
+```
+
+## JSON Schema Validation
+
+AgentDoor routes include built-in JSON schema validation:
+
+```typescript
+// POST /agentdoor/register schema
+{
+  body: {
+    type: "object",
+    required: ["public_key", "scopes_requested"],
+    properties: {
+      public_key: { type: "string" },
+      scopes_requested: { type: "array", items: { type: "string" }, minItems: 1 },
+      x402_wallet: { type: "string" },
+      metadata: { type: "object", additionalProperties: { type: "string" } },
+    },
+  },
+}
+```
+
+Add your own schemas to API routes:
+
+```typescript
+app.post<{ Body: { name: string } }>(
+  "/api/items",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string", minLength: 1 },
+        },
+      },
+    },
+  },
+  async (request, reply) => {
+    // Fastify validates body before this runs
+    const { name } = request.body;
+    return { created: name };
+  }
+);
+```
+
+## API Reference
+
+### `agentdoorPlugin(app, options)`
+
+Fastify plugin that mounts all AgentDoor routes and decorators.
+
+**Options:**
+
+- `scopes` (required): Scope definitions
+- `protectedPaths`: Path prefixes requiring auth (default: `["/api"]`)
+- `passthrough`: Allow unauthenticated requests (default: `false`)
+- `basePath`: Base path for AgentDoor routes (default: `""`)
+- `pricing`: Price per scope
+- `rateLimit`: Default rate limit config
+- `x402`: X402 payment config
+
+**Plugin Metadata:**
+
+- Display name: `"agentdoor"`
+- Encapsulation: Disabled (decorators visible to sibling routes)
+
+## TypeScript Support
+
+```typescript
+import type {
+  AgentDoorFastifyConfig,
+} from "@agentdoor/fastify";
+
+import type { AgentContext } from "@agentdoor/core";
+```
+
+The package includes TypeScript module augmentation for `FastifyRequest`:
+
+```typescript
+import "@agentdoor/fastify";
+
+// request.agent and request.isAgent are now typed
+app.get("/api/data", async (request, reply) => {
+  request.agent?.id; // TypeScript knows this exists
+  request.isAgent; // boolean
+});
+```
+
+<Note>
+Fastify's plugin system ensures AgentDoor decorators and hooks are available to all routes registered after the plugin.
+</Note>
+
+## Testing
+
+Test agent authentication with Fastify's built-in testing utilities:
+
+```typescript
+import { test } from "node:test";
+import Fastify from "fastify";
+import { agentdoorPlugin } from "@agentdoor/fastify";
+
+test("agent request", async (t) => {
+  const app = Fastify();
+  
+  app.register(agentdoorPlugin, {
+    scopes: [{ id: "data.read", description: "Read data" }],
+  });
+  
+  app.get("/api/data", async (request, reply) => {
+    return { isAgent: request.isAgent };
+  });
+  
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/data",
+    headers: {
+      authorization: "Bearer agk_live_test_key",
+    },
+  });
+  
+  t.assert.equal(res.statusCode, 200);
+});
+```
+
+## Next Steps
+
+- [Configure X402 Payments](/concepts/payments)
+- [Set up Persistent Storage](/advanced/storage)
+- [Enable Webhooks](/advanced/webhooks)

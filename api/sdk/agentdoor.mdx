@@ -1,0 +1,285 @@
+---
+title: AgentDoor Class
+description: Main SDK class for connecting to AgentDoor-enabled services
+---
+
+The `AgentDoor` class is the primary entry point for the agent-side SDK. It manages keypairs, discovers services, registers the agent, and returns authenticated Session objects for making API requests.
+
+## Constructor
+
+Create a new AgentDoor instance with optional configuration.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+const agent = new AgentDoor({
+  keyPath: "~/.agentdoor/keys.json",
+  credentialsPath: "~/.agentdoor/credentials.json",
+  x402Wallet: "0x1234567890abcdef1234567890abcdef12345678",
+  metadata: {
+    name: "MyAgent",
+    version: "1.0.0"
+  }
+});
+```
+
+### Configuration Options
+
+<ParamField path="keyPath" type="string" optional>
+  Path to the keypair file. Defaults to `~/.agentdoor/keys.json`. The keypair is automatically generated if it doesn't exist.
+</ParamField>
+
+<ParamField path="credentialsPath" type="string" optional>
+  Path to the credentials cache file. Defaults to `~/.agentdoor/credentials.json`. Used to store API keys and tokens between sessions.
+</ParamField>
+
+<ParamField path="x402Wallet" type="X402WalletConfig | string" optional>
+  x402 wallet configuration for payment-enabled requests. Can be a wallet address string (defaults to Base network with USDC) or a full configuration object.
+</ParamField>
+
+<ParamField path="metadata" type="Record<string, string>" optional>
+  Agent metadata to send during registration. Useful for identifying your agent to services.
+</ParamField>
+
+<ParamField path="scopesRequested" type="string[]" optional>
+  Specific scopes to request during registration. If omitted, requests all available scopes from the service.
+</ParamField>
+
+<ParamField path="discoveryOptions" type="DiscoverOptions" optional>
+  Discovery fetch options including cache TTL and timeout settings.
+</ParamField>
+
+<ParamField path="fetchFn" type="typeof globalThis.fetch" optional>
+  Custom fetch function. Useful for testing or custom HTTP transports.
+</ParamField>
+
+<ParamField path="ephemeral" type="boolean" optional>
+  Whether to skip credential caching entirely. When true, credentials are not saved to disk and registration happens on every connection.
+</ParamField>
+
+## Methods
+
+### connect()
+
+Connect to an AgentDoor-enabled service. Performs the full discovery, registration, and challenge-response flow, or uses cached credentials if available.
+
+```typescript
+const session = await agent.connect("https://api.example.com");
+```
+
+<ParamField path="url" type="string" required>
+  The base URL of the service (e.g., "https://api.example.com" or "api.example.com"). The scheme defaults to HTTPS if not specified.
+</ParamField>
+
+<ResponseField name="session" type="Session">
+  An authenticated Session object ready for making API requests.
+</ResponseField>
+
+#### Connection Flow
+
+The `connect()` method performs the following steps:
+
+1. **Discovery** - Fetches `/.well-known/agentdoor.json` from the service
+2. **Check Cache** - Looks for valid cached credentials to skip re-registration
+3. **Register** - POSTs to `/agentdoor/register` with public key and requested scopes
+4. **Challenge-Response** - Signs the server's nonce and POSTs to `/agentdoor/register/verify`
+5. **Cache Credentials** - Stores api_key, token, and scopes on disk (unless ephemeral mode)
+6. **Return Session** - Returns an authenticated Session for making requests
+
+#### Example with Payment
+
+```typescript
+const agent = new AgentDoor({
+  x402Wallet: {
+    address: "0x1234567890abcdef1234567890abcdef12345678",
+    network: "base",
+    currency: "USDC",
+    maxAmountPerRequest: "0.01"
+  }
+});
+
+const session = await agent.connect("https://api.example.com");
+```
+
+#### Example with Specific Scopes
+
+```typescript
+const agent = new AgentDoor({
+  scopesRequested: ["read:weather", "read:forecast"]
+});
+
+const session = await agent.connect("https://weather.example.com");
+console.log("Granted scopes:", session.scopes);
+```
+
+### publicKey
+
+Get the agent's public key in base64 format.
+
+```typescript
+const pubKey = agent.publicKey;
+console.log("Agent public key:", pubKey);
+```
+
+<ResponseField name="publicKey" type="string">
+  Base64-encoded Ed25519 public key (32 bytes encoded).
+</ResponseField>
+
+## Error Handling
+
+The AgentDoor class throws `AgentDoorError` exceptions with specific error codes:
+
+```typescript
+import { AgentDoor, AgentDoorError } from "@agentdoor/sdk";
+
+try {
+  const session = await agent.connect("https://api.example.com");
+} catch (error) {
+  if (error instanceof AgentDoorError) {
+    console.error(`AgentDoor error [${error.code}]:`, error.message);
+    
+    switch (error.code) {
+      case "NO_MATCHING_SCOPES":
+        // Handle scope mismatch
+        break;
+      case "RATE_LIMITED":
+        // Handle rate limiting
+        break;
+      case "TIMEOUT":
+        // Handle network timeout
+        break;
+      // ... handle other error codes
+    }
+  }
+}
+```
+
+### Error Codes
+
+<ResponseField name="NO_MATCHING_SCOPES" type="error">
+  No matching scopes found between requested and available scopes.
+</ResponseField>
+
+<ResponseField name="INVALID_REGISTER_RESPONSE" type="error">
+  The registration response was malformed or missing required fields.
+</ResponseField>
+
+<ResponseField name="INVALID_VERIFY_RESPONSE" type="error">
+  The verification response was malformed or missing the API key.
+</ResponseField>
+
+<ResponseField name="INVALID_AUTH_RESPONSE" type="error">
+  The token refresh response was malformed.
+</ResponseField>
+
+<ResponseField name="ALREADY_REGISTERED" type="error">
+  HTTP 409 - Agent is already registered. Use cached credentials or clear them.
+</ResponseField>
+
+<ResponseField name="RATE_LIMITED" type="error">
+  HTTP 429 - Request was rate limited by the service.
+</ResponseField>
+
+<ResponseField name="CHALLENGE_EXPIRED" type="error">
+  HTTP 410 - The challenge nonce expired before verification.
+</ResponseField>
+
+<ResponseField name="HTTP_ERROR" type="error">
+  A non-2xx HTTP response was received.
+</ResponseField>
+
+<ResponseField name="NETWORK_ERROR" type="error">
+  Network request failed (connection error, DNS failure, etc.).
+</ResponseField>
+
+<ResponseField name="TIMEOUT" type="error">
+  Request exceeded the timeout threshold.
+</ResponseField>
+
+<ResponseField name="INVALID_JSON" type="error">
+  Response body was not valid JSON.
+</ResponseField>
+
+## Type Definitions
+
+### AgentDoorOptions
+
+```typescript
+interface AgentDoorOptions {
+  keyPath?: string;
+  credentialsPath?: string;
+  x402Wallet?: X402WalletConfig | string;
+  metadata?: Record<string, string>;
+  scopesRequested?: string[];
+  discoveryOptions?: DiscoverOptions;
+  fetchFn?: typeof globalThis.fetch;
+  ephemeral?: boolean;
+}
+```
+
+### AgentDoorError
+
+```typescript
+class AgentDoorError extends Error {
+  readonly code: AgentDoorErrorCode;
+  constructor(message: string, code: AgentDoorErrorCode);
+}
+
+type AgentDoorErrorCode =
+  | "NO_MATCHING_SCOPES"
+  | "INVALID_REGISTER_RESPONSE"
+  | "INVALID_VERIFY_RESPONSE"
+  | "INVALID_AUTH_RESPONSE"
+  | "ALREADY_REGISTERED"
+  | "RATE_LIMITED"
+  | "CHALLENGE_EXPIRED"
+  | "HTTP_ERROR"
+  | "NETWORK_ERROR"
+  | "TIMEOUT"
+  | "INVALID_JSON";
+```
+
+## Complete Example
+
+```typescript
+import { AgentDoor, AgentDoorError } from "@agentdoor/sdk";
+
+async function main() {
+  // Create an agent with payment support
+  const agent = new AgentDoor({
+    keyPath: "~/.agentdoor/keys.json",
+    credentialsPath: "~/.agentdoor/credentials.json",
+    x402Wallet: "0x1234567890abcdef1234567890abcdef12345678",
+    metadata: {
+      name: "WeatherBot",
+      version: "1.0.0",
+      description: "Automated weather monitoring agent"
+    }
+  });
+
+  try {
+    // Connect to the service
+    const session = await agent.connect("https://api.weather.example.com");
+    
+    console.log("Connected successfully!");
+    console.log("Agent ID:", session.agentId);
+    console.log("Granted scopes:", session.scopes);
+    
+    // Make authenticated requests
+    const forecast = await session.get("/weather/forecast", {
+      params: { city: "san-francisco" },
+      x402: true // Attach payment header
+    });
+    
+    console.log("Forecast:", forecast.data);
+  } catch (error) {
+    if (error instanceof AgentDoorError) {
+      console.error(`Connection failed [${error.code}]:`, error.message);
+    } else {
+      console.error("Unexpected error:", error);
+    }
+  }
+}
+
+main();
+```

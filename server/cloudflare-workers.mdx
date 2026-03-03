@@ -1,0 +1,412 @@
+---
+title: Cloudflare Workers
+description: Deploy AgentDoor on Cloudflare Workers
+---
+
+Deploy AgentDoor on Cloudflare Workers for edge-first agent authentication. The `@agentdoor/cloudflare` adapter provides fetch handlers and Durable Objects for persistent state.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/cloudflare @agentdoor/core
+```
+
+```bash pnpm
+pnpm add @agentdoor/cloudflare @agentdoor/core
+```
+
+```bash yarn
+yarn add @agentdoor/cloudflare @agentdoor/core
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Create worker handler">
+
+Create `src/index.ts`:
+
+```typescript
+import { createAgentDoorWorker } from "@agentdoor/cloudflare";
+
+const handler = createAgentDoorWorker({
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+});
+
+export default {
+  fetch: handler,
+};
+```
+
+</Step>
+
+<Step title="Configure wrangler.toml">
+
+```toml wrangler.toml
+name = "agentdoor-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[env.production]
+vars = { X402_WALLET = "0xYourWalletAddress" }
+```
+
+</Step>
+
+<Step title="Deploy">
+
+```bash
+npx wrangler deploy
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full Cloudflare Worker with agent authentication:
+
+```typescript src/index.ts
+import { handleRequest } from "@agentdoor/cloudflare";
+import type { CloudflareEnv, AgentDoorCloudflareConfig } from "@agentdoor/cloudflare";
+
+const config: AgentDoorCloudflareConfig = {
+  scopes: [
+    {
+      id: "api.read",
+      description: "Read API data",
+      price: "$0.005/req",
+      rateLimit: "500/hour",
+    },
+    {
+      id: "api.write",
+      description: "Write API data",
+      price: "$0.05/req",
+      rateLimit: "50/hour",
+    },
+  ],
+  pricing: {
+    "api.read": "$0.005/req",
+    "api.write": "$0.05/req",
+  },
+  rateLimit: { requests: 500, window: "1h" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: "0xYourWalletAddress",
+  },
+};
+
+export default {
+  async fetch(request: Request, env: CloudflareEnv): Promise<Response> {
+    const url = new URL(request.url);
+    
+    // Handle AgentDoor routes
+    if (
+      url.pathname.startsWith("/agentdoor") ||
+      url.pathname.startsWith("/.well-known")
+    ) {
+      return handleRequest(request, env, config);
+    }
+    
+    // Your API routes
+    if (url.pathname === "/api/data") {
+      // Check if request is from an agent
+      const authHeader = request.headers.get("authorization");
+      const isAgent = authHeader?.startsWith("Bearer ");
+      
+      return Response.json({
+        data: "hello",
+        caller: isAgent ? "agent" : "human",
+      });
+    }
+    
+    return Response.json({ error: "Not found" }, { status: 404 });
+  },
+};
+```
+
+## Durable Objects for Persistence
+
+Use Durable Objects to persist agent state across Worker invocations:
+
+<Steps>
+
+<Step title="Export Durable Object">
+
+```typescript src/index.ts
+import { handleRequest, AgentDoorDurableObject } from "@agentdoor/cloudflare";
+
+// Export the Durable Object class
+export { AgentDoorDurableObject };
+
+export default {
+  async fetch(request: Request, env: CloudflareEnv) {
+    return handleRequest(request, env, {
+      scopes: [/* ... */],
+      useDurableObjects: true, // Enable Durable Objects
+    });
+  },
+};
+```
+
+</Step>
+
+<Step title="Configure wrangler.toml">
+
+```toml wrangler.toml
+name = "agentdoor-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[durable_objects.bindings]]
+name = "AGENTDOOR_DO"
+class_name = "AgentDoorDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AgentDoorDurableObject"]
+```
+
+</Step>
+
+<Step title="Deploy with migrations">
+
+```bash
+npx wrangler deploy
+```
+
+</Step>
+
+</Steps>
+
+## Using with Hono
+
+Combine AgentDoor with Hono for a better DX:
+
+```typescript src/index.ts
+import { Hono } from "hono";
+import { agentdoor, type AgentDoorVariables } from "@agentdoor/hono";
+
+type Bindings = {
+  X402_WALLET: string;
+};
+
+const app = new Hono<{ Bindings: Bindings; Variables: AgentDoorVariables }>();
+
+// Mount AgentDoor
+agentdoor(app, {
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read data",
+      price: "$0.005/req",
+    },
+  ],
+  pricing: { "data.read": "$0.005/req" },
+});
+
+// Your API routes
+app.get("/api/data", (c) => {
+  const isAgent = c.get("isAgent");
+  const agent = c.get("agent");
+  
+  return c.json({
+    data: "hello",
+    caller: isAgent ? `agent:${agent?.id}` : "human",
+  });
+});
+
+export default app;
+```
+
+See the [Hono documentation](/server/hono) for more details.
+
+## How It Works
+
+The Cloudflare adapter:
+
+1. **Uses Web Crypto APIs**: Ed25519 signature verification, SHA-256 hashing
+2. **Runs at the edge**: Low latency worldwide
+3. **Stores state**: In-memory Maps or Durable Objects
+4. **Handles routes**: Discovery, registration, auth, and auth guard
+5. **Injects headers**: `x-agentdoor-*` headers for downstream logic
+
+## Advanced Configuration
+
+### Protected Paths
+
+Customize which paths require agent authentication:
+
+```typescript
+const config = {
+  scopes: [/* ... */],
+  protectedPaths: ["/api/"], // Only /api/* requires auth
+  passthrough: false, // Block unauthenticated requests (default)
+};
+```
+
+### Passthrough Mode
+
+Allow unauthenticated requests:
+
+```typescript
+const config = {
+  scopes: [/* ... */],
+  passthrough: true, // Don't block unauthenticated requests
+};
+
+export default {
+  async fetch(request: Request, env: CloudflareEnv) {
+    const response = await handleRequest(request, env, config);
+    
+    // Check auth status
+    const isAuth = response.headers.get("x-agentdoor-authenticated") === "true";
+    
+    if (!isAuth && request.url.includes("/api/protected")) {
+      return Response.json({ error: "Agent required" }, { status: 401 });
+    }
+    
+    return response;
+  },
+};
+```
+
+### Environment Variables
+
+Access Cloudflare environment bindings:
+
+```typescript
+export default {
+  async fetch(request: Request, env: CloudflareEnv) {
+    const config = {
+      scopes: [/* ... */],
+      x402: {
+        network: "base",
+        currency: "USDC",
+        paymentAddress: env.X402_WALLET as string, // From wrangler.toml
+      },
+    };
+    
+    return handleRequest(request, env, config);
+  },
+};
+```
+
+## Headers Injected
+
+AgentDoor sets these headers on authenticated requests:
+
+- `x-agentdoor-authenticated`: `"true"` or `"false"`
+- `x-agentdoor-agent-id`: Agent ID
+- `x-agentdoor-agent`: JSON-encoded agent context
+
+## API Reference
+
+### `createAgentDoorWorker(config)`
+
+Creates a standalone fetch handler for Cloudflare Workers.
+
+**Parameters:**
+
+- `config`: Configuration object
+  - `scopes` (required): Scope definitions
+  - `protectedPaths`: Path prefixes requiring auth (default: `["/api/"]`)
+  - `passthrough`: Allow unauthenticated requests (default: `false`)
+  - `useDurableObjects`: Use Durable Objects for persistence (default: `false`)
+
+**Returns:** `(request: Request, env?: CloudflareEnv) => Promise<Response>`
+
+### `handleRequest(request, env, config)`
+
+Handles an incoming request. Use this for more control over request routing.
+
+**Parameters:**
+
+- `request`: Incoming `Request`
+- `env`: Cloudflare environment bindings
+- `config`: Configuration object
+
+**Returns:** `Promise<Response>`
+
+### `AgentDoorDurableObject`
+
+Durable Object class for persisting agent state.
+
+**Methods:**
+
+- `fetch(request: Request): Promise<Response>`: Internal API for Worker-DO communication
+
+## Deployment
+
+### Local Development
+
+Run locally with Wrangler:
+
+```bash
+npx wrangler dev
+```
+
+Test endpoints:
+
+- Discovery: `http://localhost:8787/.well-known/agentdoor.json`
+- Register: `POST http://localhost:8787/agentdoor/register`
+
+### Production Deployment
+
+```bash
+npx wrangler deploy --env production
+```
+
+### Secrets Management
+
+Set secrets with Wrangler:
+
+```bash
+echo "0xYourWalletAddress" | npx wrangler secret put X402_WALLET
+```
+
+## TypeScript Support
+
+```typescript
+import type {
+  AgentDoorCloudflareConfig,
+  CloudflareEnv,
+} from "@agentdoor/cloudflare";
+
+import type { AgentContext } from "@agentdoor/core";
+```
+
+<Warning>
+In-memory Maps reset on each Worker cold start. Use Durable Objects for production persistence.
+</Warning>
+
+## Performance
+
+- **Cold start**: ~10-50ms
+- **Warm request**: &lt;1ms
+- **Edge latency**: &lt;50ms worldwide
+- **Durable Objects**: Adds ~5-20ms per read/write
+
+## Next Steps
+
+- [Deploy to Cloudflare](/deployment/cloudflare)
+- [Use with Hono](/server/hono)
+- [Configure Durable Objects](/advanced/storage)

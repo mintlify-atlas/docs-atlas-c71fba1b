@@ -1,0 +1,573 @@
+---
+title: Deploy to Cloudflare Workers
+description: Deploy an agent-ready API to Cloudflare Workers with edge computing and D1 storage
+---
+
+Cloudflare Workers provide edge computing with near-zero cold starts and global distribution. This guide covers deploying AgentDoor with Hono to Cloudflare Workers.
+
+## Quick Start
+
+Deploy a new Cloudflare Worker with AgentDoor:
+
+<Steps>
+  <Step title="Clone Template">
+    ```bash
+    git clone https://github.com/0xaron/agentdoor
+    cd agentdoor/packages/template-cloudflare/template
+    ```
+  </Step>
+  
+  <Step title="Install Dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+  
+  <Step title="Configure Wallet">
+    Edit `wrangler.toml` and set your wallet address:
+    
+    ```toml
+    [vars]
+    X402_WALLET = "0xYourWalletAddress"
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    npm run deploy
+    ```
+  </Step>
+</Steps>
+
+## Manual Setup
+
+For custom deployments or integration into existing Workers:
+
+### 1. Install Dependencies
+
+```bash
+npm install hono @agentdoor/hono
+npm install -D wrangler typescript
+```
+
+### 2. Create Worker Application
+
+Create `src/index.ts` with AgentDoor middleware:
+
+```typescript
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { agentDoor } from '@agentdoor/hono';
+
+type Bindings = {
+  X402_WALLET: string;
+  DB?: D1Database; // Optional D1 database binding
+};
+
+const app = new Hono<{ Bindings: Bindings }>();
+
+// Enable CORS
+app.use('*', cors());
+
+// AgentDoor middleware
+app.use(
+  '/api/*',
+  agentDoor({
+    scopes: [
+      { id: 'data.read', description: 'Read worker data', price: '$0.001/req' },
+      { id: 'data.write', description: 'Write worker data', price: '$0.01/req' },
+      { id: 'compute', description: 'Run computations', price: '$0.005/req' },
+    ],
+    service: {
+      name: 'Agent-Ready Worker',
+      description: 'Cloudflare Worker with AgentDoor authentication',
+    },
+    x402: {
+      network: 'base',
+      currency: 'USDC',
+      paymentAddress: (c) => c.env.X402_WALLET || '0xYourWalletAddress',
+    },
+  })
+);
+
+// Routes
+app.get('/', (c) => {
+  return c.json({
+    name: 'Agent-Ready Worker',
+    discovery: '/.well-known/agentdoor',
+  });
+});
+
+app.get('/api/data', (c) => {
+  const agentId = c.req.header('x-agentdoor-agent-id') || 'anonymous';
+  
+  return c.json({
+    success: true,
+    data: [/* your data */],
+    meta: { agent: agentId }
+  });
+});
+
+export default app;
+```
+
+### 3. Configure Wrangler
+
+Create `wrangler.toml` in your project root:
+
+```toml
+name = "agentdoor-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Environment variables
+[vars]
+X402_WALLET = "0xYourWalletAddress"
+
+# D1 Database binding (optional)
+[[d1_databases]]
+binding = "DB"
+database_name = "agentdoor"
+database_id = "your-database-id"
+```
+
+### 4. Add Scripts to package.json
+
+```json
+{
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}
+```
+
+## Storage Configuration
+
+Cloudflare Workers require edge-compatible storage. Choose based on your needs:
+
+### D1 Database (Recommended)
+
+D1 is Cloudflare's serverless SQLite database with automatic replication.
+
+<Steps>
+  <Step title="Create D1 Database">
+    ```bash
+    wrangler d1 create agentdoor
+    ```
+    
+    Copy the database ID from the output.
+  </Step>
+  
+  <Step title="Update wrangler.toml">
+    ```toml
+    [[d1_databases]]
+    binding = "DB"
+    database_name = "agentdoor"
+    database_id = "your-database-id-here"
+    ```
+  </Step>
+  
+  <Step title="Create Schema">
+    Create `schema.sql` with AgentDoor tables:
+    
+    ```sql
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      public_key TEXT UNIQUE NOT NULL,
+      api_key_hash TEXT UNIQUE NOT NULL,
+      x402_wallet TEXT,
+      scopes_granted TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      reputation INTEGER DEFAULT 100,
+      total_requests INTEGER DEFAULT 0,
+      total_x402_paid REAL DEFAULT 0,
+      rate_limit_requests INTEGER DEFAULT 100,
+      rate_limit_window INTEGER DEFAULT 60,
+      metadata TEXT,
+      created_at TEXT NOT NULL,
+      last_auth_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS challenges (
+      agent_id TEXT PRIMARY KEY,
+      challenge TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+    ```
+  </Step>
+  
+  <Step title="Execute Schema">
+    ```bash
+    wrangler d1 execute agentdoor --file=schema.sql
+    ```
+  </Step>
+  
+  <Step title="Configure Storage">
+    ```typescript
+    import { D1Store } from '@agentdoor/cloudflare';
+
+    app.use('/api/*', agentDoor({
+      // ... other config
+      storage: (c) => new D1Store({ database: c.env.DB })
+    }));
+    ```
+  </Step>
+</Steps>
+
+### Workers KV (Simple Key-Value)
+
+For simpler use cases, use Workers KV:
+
+```toml
+[[kv_namespaces]]
+binding = "KV"
+id = "your-kv-namespace-id"
+```
+
+```typescript
+import { KVStore } from '@agentdoor/cloudflare';
+
+app.use('/api/*', agentDoor({
+  // ... other config
+  storage: (c) => new KVStore({ namespace: c.env.KV })
+}));
+```
+
+<Note>
+  KV has eventual consistency. For strong consistency, use D1.
+</Note>
+
+### Durable Objects (Advanced)
+
+For advanced use cases requiring coordination:
+
+```toml
+[[durable_objects.bindings]]
+name = "AGENTS"
+class_name = "AgentStore"
+script_name = "agentdoor-worker"
+```
+
+See [Cloudflare Durable Objects docs](https://developers.cloudflare.com/durable-objects/) for implementation.
+
+## Environment Variables
+
+Manage environment variables via `wrangler.toml` and secrets.
+
+### Public Variables (wrangler.toml)
+
+For non-sensitive configuration:
+
+```toml
+[vars]
+X402_WALLET = "0xYourWalletAddress"
+NODE_ENV = "production"
+```
+
+### Secrets (Encrypted)
+
+For sensitive values like API keys:
+
+```bash
+# Add a secret
+wrangler secret put DATABASE_URL
+# Enter value when prompted
+
+# List secrets
+wrangler secret list
+
+# Delete a secret
+wrangler secret delete DATABASE_URL
+```
+
+Access secrets in your worker:
+
+```typescript
+type Bindings = {
+  X402_WALLET: string;
+  DATABASE_URL: string; // Secret
+};
+
+app.get('/api/data', (c) => {
+  const dbUrl = c.env.DATABASE_URL; // Access secret
+});
+```
+
+## Custom Domains
+
+<Steps>
+  <Step title="Add Domain to Cloudflare">
+    Ensure your domain is managed by Cloudflare DNS.
+  </Step>
+  
+  <Step title="Add Route">
+    In Cloudflare dashboard:
+    1. Navigate to **Workers & Pages**
+    2. Select your worker
+    3. Click **Triggers** → **Add Custom Domain**
+    4. Enter your domain (e.g., `api.yourdomain.com`)
+  </Step>
+  
+  <Step title="Configure DNS">
+    Cloudflare automatically configures DNS records for your domain.
+  </Step>
+</Steps>
+
+Or via `wrangler.toml`:
+
+```toml
+routes = [
+  { pattern = "api.yourdomain.com/*", zone_name = "yourdomain.com" }
+]
+```
+
+## Development Workflow
+
+### Local Development
+
+Run your worker locally with hot reload:
+
+```bash
+npm run dev
+```
+
+Access at `http://localhost:8787`.
+
+### Testing with D1
+
+Test with local D1 database:
+
+```bash
+# Create local database
+wrangler d1 execute agentdoor --local --file=schema.sql
+
+# Run with local D1
+wrangler dev --local
+```
+
+### Remote Development
+
+Test against production resources:
+
+```bash
+wrangler dev --remote
+```
+
+## Deployment
+
+### Deploy to Production
+
+```bash
+# Deploy to production
+npm run deploy
+
+# Deploy with custom name
+wrangler deploy --name my-custom-worker
+```
+
+### Environment-Specific Deployments
+
+Create multiple environments in `wrangler.toml`:
+
+```toml
+# Production
+name = "agentdoor-worker"
+
+[env.staging]
+name = "agentdoor-worker-staging"
+[env.staging.vars]
+X402_WALLET = "0xStagingWallet"
+
+[env.production]
+name = "agentdoor-worker-production"
+[env.production.vars]
+X402_WALLET = "0xProductionWallet"
+```
+
+Deploy to specific environment:
+
+```bash
+wrangler deploy --env staging
+wrangler deploy --env production
+```
+
+## Edge Considerations
+
+### Execution Time Limits
+
+Cloudflare Workers have execution time limits:
+
+- **Free tier**: 10ms CPU time per request
+- **Paid tier**: 50ms CPU time per request
+- **Maximum duration**: 30s (free), 15m (paid with Durable Objects)
+
+<Warning>
+  Long-running operations may hit time limits. Consider using Durable Objects or queue-based processing.
+</Warning>
+
+### Memory Limits
+
+Workers have a 128MB memory limit. Optimize for:
+
+- Minimal dependencies
+- Streaming responses for large payloads
+- Offloading heavy computation to Durable Objects
+
+### Cold Starts
+
+Workers have near-zero cold starts (&lt;10ms), but optimize by:
+
+- Lazy-loading dependencies
+- Caching frequently accessed data
+- Using module workers (automatic with Wrangler)
+
+## Monitoring and Logs
+
+### Viewing Logs
+
+Stream logs in real-time:
+
+```bash
+# Production logs
+wrangler tail
+
+# Staging logs
+wrangler tail --env staging
+
+# Filter logs
+wrangler tail --status error
+```
+
+### Analytics
+
+View analytics in Cloudflare dashboard:
+
+1. Navigate to **Workers & Pages**
+2. Select your worker
+3. Click **Metrics** tab
+
+Metrics include:
+- Request volume
+- Error rate
+- CPU time
+- Duration
+
+### Custom Logging
+
+Add structured logging:
+
+```typescript
+app.use('*', async (c, next) => {
+  const start = Date.now();
+  await next();
+  const duration = Date.now() - start;
+  
+  console.log(JSON.stringify({
+    method: c.req.method,
+    path: c.req.path,
+    status: c.res.status,
+    duration,
+    agent: c.req.header('x-agentdoor-agent-id')
+  }));
+});
+```
+
+## Scaling and Performance
+
+### Automatic Scaling
+
+Workers automatically scale to handle traffic with no configuration required.
+
+### Performance Optimization
+
+1. **Enable Caching**: Cache responses at the edge
+   ```typescript
+   app.get('/api/data', (c) => {
+     c.header('Cache-Control', 'public, max-age=60');
+     return c.json({ data: [] });
+   });
+   ```
+
+2. **Use Smart Placement**: Enable Smart Placement for optimal routing
+   ```toml
+   [placement]
+   mode = "smart"
+   ```
+
+3. **Minimize Bundle Size**: Use tree-shaking and code splitting
+   ```typescript
+   // Lazy load heavy dependencies
+   const heavyLib = await import('./heavy-lib');
+   ```
+
+## Troubleshooting
+
+### Worker Not Deploying
+
+Check common issues:
+
+1. **Syntax errors**: Run `wrangler publish --dry-run`
+2. **Size limits**: Workers have a 1MB size limit after compression
+3. **Compatibility date**: Ensure `compatibility_date` is recent
+
+### D1 Connection Issues
+
+Verify D1 configuration:
+
+```bash
+# List D1 databases
+wrangler d1 list
+
+# Check database info
+wrangler d1 info agentdoor
+
+# Query database directly
+wrangler d1 execute agentdoor --command "SELECT * FROM agents"
+```
+
+### CORS Errors
+
+Ensure CORS is properly configured:
+
+```typescript
+import { cors } from 'hono/cors';
+
+app.use('*', cors({
+  origin: '*', // Or specify allowed origins
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-AgentDoor-Token'],
+}));
+```
+
+## Best Practices
+
+1. **Use D1 for Production**: D1 provides reliable, serverless storage for agent data.
+
+2. **Enable Smart Placement**: Improves performance by routing requests optimally.
+
+3. **Monitor CPU Time**: Watch for CPU time spikes that may hit limits.
+
+4. **Use Secrets for Sensitive Data**: Never commit secrets to `wrangler.toml`.
+
+5. **Test Locally**: Use `wrangler dev --local` to test with local D1.
+
+6. **Version Your Worker**: Use git tags to track deployed versions.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hono Framework" icon="fire" href="/server/hono">
+    Learn more about Hono for Cloudflare Workers
+  </Card>
+  <Card title="D1 Storage" icon="database" href="/advanced/storage">
+    Configure D1 storage for AgentDoor
+  </Card>
+  <Card title="Rate Limiting" icon="gauge" href="/advanced/rate-limiting">
+    Configure rate limits for edge workers
+  </Card>
+  <Card title="Cloudflare Docs" icon="cloud" href="https://developers.cloudflare.com/workers/">
+    Official Cloudflare Workers documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,414 @@
+---
+title: Protected Routes
+description: How AgentDoor middleware protects your API endpoints
+---
+
+AgentDoor uses Express middleware to enrich incoming requests with agent context, making it easy to build agent-aware APIs that serve both human and agent traffic.
+
+## How It Works
+
+When you mount AgentDoor with `app.use(agentdoor(...))`, it automatically:
+
+1. **Intercepts Requests**: All requests passing through the router are analyzed
+2. **Validates Auth**: Checks the `Authorization` header for valid API keys or JWT tokens
+3. **Enriches Context**: Adds `req.agent` and `req.isAgent` to Express requests
+4. **Non-blocking**: Does NOT reject unauthenticated requests - your handlers decide access policy
+
+## Request Properties
+
+AgentDoor adds two properties to every Express request:
+
+### req.isAgent
+
+<ParamField path="req.isAgent" type="boolean">
+  `true` if the request is from a registered agent with valid authentication, `false` otherwise
+</ParamField>
+
+Use this for quick checks:
+
+```typescript
+app.get('/data', (req, res) => {
+  if (!req.isAgent) {
+    return res.status(401).json({ error: 'Agent authentication required' });
+  }
+  
+  // Serve agent traffic
+  res.json({ data: '...' });
+});
+```
+
+### req.agent
+
+<ParamField path="req.agent" type="AgentContext | undefined">
+  Agent context object containing identity, scopes, and metadata. Only present when `req.isAgent === true`.
+</ParamField>
+
+**AgentContext properties:**
+
+<ResponseField name="id" type="string">
+  Agent ID (format: `ag_*`)
+</ResponseField>
+
+<ResponseField name="publicKey" type="string">
+  Base64-encoded Ed25519 public key
+</ResponseField>
+
+<ResponseField name="scopes" type="string[]">
+  Array of granted scopes
+</ResponseField>
+
+<ResponseField name="rateLimit" type="object">
+  Agent's rate limit configuration
+  
+  <Expandable title="rateLimit properties">
+    <ResponseField name="requests" type="number">
+      Maximum requests allowed in the window
+    </ResponseField>
+    <ResponseField name="window" type="string">
+      Time window (e.g., `"1h"`, `"1d"`)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="reputation" type="number">
+  Reputation score (0-100)
+</ResponseField>
+
+<ResponseField name="metadata" type="object">
+  Agent metadata (framework, version, name, etc.)
+</ResponseField>
+
+## Example Usage
+
+### Basic Protection
+
+```typescript
+import express from 'express';
+import { agentdoor } from '@agentdoor/express';
+
+const app = express();
+
+// Mount AgentDoor
+app.use(agentdoor({
+  scopes: [
+    { id: 'data.read', description: 'Read data' },
+    { id: 'data.write', description: 'Write data' },
+  ],
+  pricing: {
+    'data.read': '$0.001/req',
+    'data.write': '$0.01/req',
+  },
+}));
+
+// Protected endpoint - agents only
+app.get('/data', (req, res) => {
+  if (!req.isAgent) {
+    return res.status(401).json({
+      error: 'authentication_required',
+      message: 'This endpoint requires agent authentication',
+    });
+  }
+  
+  res.json({ data: 'sensitive information' });
+});
+
+app.listen(3000);
+```
+
+### Scope-based Authorization
+
+```typescript
+app.get('/data', (req, res) => {
+  if (!req.isAgent) {
+    return res.status(401).json({ error: 'authentication_required' });
+  }
+  
+  // Check if agent has required scope
+  if (!req.agent!.scopes.includes('data.read')) {
+    return res.status(403).json({
+      error: 'insufficient_permissions',
+      message: 'This endpoint requires the data.read scope',
+      required_scope: 'data.read',
+      your_scopes: req.agent!.scopes,
+    });
+  }
+  
+  res.json({ data: '...' });
+});
+
+app.post('/data', (req, res) => {
+  if (!req.isAgent || !req.agent!.scopes.includes('data.write')) {
+    return res.status(403).json({
+      error: 'insufficient_permissions',
+      message: 'This endpoint requires the data.write scope',
+    });
+  }
+  
+  // Process write request
+  res.status(201).json({ success: true });
+});
+```
+
+### Mixed Traffic (Humans + Agents)
+
+```typescript
+app.get('/weather/:city', (req, res) => {
+  const { city } = req.params;
+  
+  if (req.isAgent) {
+    // Agent request - bill based on pricing
+    const agentId = req.agent!.id;
+    console.log(`Agent ${agentId} requesting weather for ${city}`);
+    
+    // Return structured data optimized for agents
+    return res.json({
+      city,
+      temperature: 72,
+      conditions: 'sunny',
+      forecast: [...],
+    });
+  } else {
+    // Human request - serve HTML page
+    return res.send(`
+      <html>
+        <body>
+          <h1>Weather for ${city}</h1>
+          <p>Temperature: 72°F</p>
+          <p>Conditions: Sunny</p>
+        </body>
+      </html>
+    `);
+  }
+});
+```
+
+### Reputation Gating
+
+```typescript
+app.post('/data/bulk', (req, res) => {
+  if (!req.isAgent) {
+    return res.status(401).json({ error: 'authentication_required' });
+  }
+  
+  // Only allow agents with good reputation
+  const reputation = req.agent!.reputation ?? 50;
+  if (reputation < 70) {
+    return res.status(403).json({
+      error: 'reputation_too_low',
+      message: 'This endpoint requires a reputation score of 70 or higher',
+      your_reputation: reputation,
+      required_reputation: 70,
+    });
+  }
+  
+  // Process bulk request
+  res.json({ success: true });
+});
+```
+
+## Authentication Methods
+
+The auth guard middleware supports two authentication methods:
+
+### 1. API Key
+
+Format: `Bearer agk_live_*` or `Bearer agk_test_*`
+
+```bash
+curl https://api.example.com/data \
+  -H "Authorization: Bearer agk_live_abc123..."
+```
+
+**How it works:**
+- Middleware hashes the API key (SHA-256)
+- Looks up agent by key hash in the store
+- Loads agent context from database
+- Sets `req.agent` and `req.isAgent = true`
+
+**Pros:** Never expires, simple to use
+**Cons:** Requires database lookup on every request
+
+### 2. JWT Token
+
+Format: `Bearer eyJ*` (base64 JWT)
+
+```bash
+curl https://api.example.com/data \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+**How it works:**
+- Middleware verifies JWT signature
+- Extracts agent context from token claims
+- Sets `req.agent` and `req.isAgent = true`
+- No database lookup needed
+
+**Pros:** Fast (no DB lookup), self-contained
+**Cons:** Expires after 1 hour, requires refresh
+
+<Tip>
+  For high-throughput APIs, use JWT tokens to avoid database lookups on every request. The middleware can handle thousands of requests per second with JWTs.
+</Tip>
+
+## Non-blocking Philosophy
+
+AgentDoor middleware is **non-blocking by design**:
+
+```typescript
+app.use(agentdoor({ /* config */ }));
+
+// This endpoint is accessible to EVERYONE
+app.get('/public', (req, res) => {
+  res.json({ message: 'Public endpoint' });
+});
+
+// This endpoint checks req.isAgent to restrict access
+app.get('/private', (req, res) => {
+  if (!req.isAgent) {
+    return res.status(401).json({ error: 'authentication_required' });
+  }
+  res.json({ message: 'Private endpoint' });
+});
+```
+
+This design allows you to:
+- Serve both human and agent traffic through the same endpoints
+- Gradually add agent support without breaking existing APIs
+- Make fine-grained authorization decisions in your handlers
+- Use AgentDoor alongside other auth systems (e.g., Clerk for humans)
+
+## Middleware Order
+
+AgentDoor must come **before** your route handlers but **after** body parsing:
+
+```typescript
+import express from 'express';
+import { agentdoor } from '@agentdoor/express';
+
+const app = express();
+
+// 1. Body parsing (if needed for your app)
+app.use(express.json());
+
+// 2. AgentDoor (enriches requests with agent context)
+app.use(agentdoor({ /* config */ }));
+
+// 3. Your route handlers (can check req.isAgent)
+app.get('/data', (req, res) => { /* ... */ });
+
+app.listen(3000);
+```
+
+<Note>
+  AgentDoor automatically applies `express.json()` to its own routes (`/agentdoor/register`, `/agentdoor/auth`) so you don't need to worry about body parsing for registration flows.
+</Note>
+
+## Skipped Paths
+
+The auth guard automatically skips AgentDoor's own management routes:
+
+- `/.well-known/agentdoor.json` (discovery)
+- `/agentdoor/register` (registration step 1)
+- `/agentdoor/register/verify` (registration step 2)
+- `/agentdoor/auth` (token refresh)
+- `/agentdoor/health` (health check)
+
+These routes have their own authentication logic and don't need the auth guard.
+
+## Configuration Options
+
+The auth guard can be configured through `agentdoor()` options:
+
+```typescript
+app.use(agentdoor({
+  scopes: [/* ... */],
+  
+  // Enable/disable auth guard (default: true)
+  enableAuthGuard: true,
+  
+  // Custom storage backend
+  store: new PostgresStore({ url: process.env.DATABASE_URL }),
+  
+  // JWT settings
+  jwt: {
+    secret: process.env.JWT_SECRET,
+    expiresIn: '1h',
+  },
+}));
+```
+
+Set `enableAuthGuard: false` if you want to handle authentication yourself:
+
+```typescript
+const ad = agentdoor({
+  scopes: [/* ... */],
+  enableAuthGuard: false, // Don't auto-enrich requests
+});
+
+app.use(ad);
+
+// Manually check auth in your handlers
+app.get('/data', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'missing_authorization' });
+  }
+  
+  // Custom auth logic here
+});
+```
+
+## Error Handling
+
+The auth guard logs authentication failures but **does not block requests**:
+
+```typescript
+// Invalid token - logged but request continues
+// req.isAgent = false
+// req.agent = undefined
+
+app.get('/data', (req, res) => {
+  // Your handler decides what to do
+  if (!req.isAgent) {
+    return res.status(401).json({ error: 'authentication_required' });
+  }
+  
+  res.json({ data: '...' });
+});
+```
+
+Common auth failures:
+- Expired JWT token
+- Invalid API key
+- Suspended/banned agent
+- Malformed Authorization header
+
+<Tip>
+  Monitor your application logs for auth failures. Patterns like many expired tokens might indicate agents need better token refresh logic.
+</Tip>
+
+## TypeScript Support
+
+AgentDoor extends Express types to include `agent` and `isAgent`:
+
+```typescript
+import { Request, Response } from 'express';
+
+app.get('/data', (req: Request, res: Response) => {
+  // TypeScript knows about req.isAgent and req.agent
+  if (req.isAgent) {
+    const agentId: string = req.agent.id;
+    const scopes: string[] = req.agent.scopes;
+    // ...
+  }
+});
+```
+
+No additional type imports needed - the types are automatically augmented when you import `@agentdoor/express`.
+
+## Next Steps
+
+- Learn about [rate limiting](/advanced/rate-limiting) to control agent usage
+- Explore [reputation systems](/advanced/rate-limiting) for trust-based gating
+- Implement [x402 payments](/concepts/payments) for paid APIs
+- Add [webhooks](/advanced/webhooks) to track agent lifecycle events

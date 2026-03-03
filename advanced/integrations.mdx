@@ -1,0 +1,481 @@
+---
+title: Integrations
+description: Stripe billing, x402 Bazaar marketplace, and registry sync
+---
+
+## Overview
+
+AgentDoor provides integrations for:
+
+- **Stripe** - Map x402 payments to Stripe invoice items
+- **x402 Bazaar** - Publish services to the x402 marketplace
+- **Registry** - Discover and sync AgentDoor services
+
+## Stripe Billing Bridge
+
+Map agent x402 payments to Stripe invoice items for unified revenue tracking.
+
+### Installation
+
+```bash
+npm install @agentdoor/stripe
+npm install stripe
+```
+
+### Setup
+
+```typescript
+import { StripeBridge } from "@agentdoor/stripe";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2023-10-16",
+});
+
+const bridge = new StripeBridge({
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY!,
+  autoCreateCustomers: true,
+  defaultCurrency: "usd",
+  metadata: {
+    source: "agentdoor",
+    environment: process.env.NODE_ENV!
+  },
+  callbacks: {
+    onCustomerCreated: async (agentId, stripeCustomerId) => {
+      console.log(`Created Stripe customer ${stripeCustomerId} for ${agentId}`);
+    },
+    onInvoiceItemCreated: async (agentId, amount, currency) => {
+      console.log(`Recorded ${amount} ${currency} for agent ${agentId}`);
+    },
+    onReconciliationError: async (agentId, error) => {
+      console.error(`Reconciliation failed for ${agentId}:`, error);
+    }
+  }
+});
+
+// Set Stripe client
+bridge.setStripeClient(stripe);
+```
+
+### Configuration
+
+```typescript
+interface StripeBridgeConfig {
+  stripeSecretKey: string;            // Stripe API secret key
+  autoCreateCustomers?: boolean;      // Auto-create customers (default: true)
+  defaultCurrency?: string;           // Default currency (default: "usd")
+  metadata?: Record<string, string>;  // Metadata for all Stripe objects
+  callbacks?: StripeBridgeCallbacks;  // Event callbacks
+}
+```
+
+### Reconcile Payments
+
+When an agent makes an x402 payment, record it in Stripe:
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+
+const door = createAgentDoor({
+  scopes: [...],
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET!,
+  },
+  
+  // Intercept x402 payments
+  onX402PaymentReceived: async (payment) => {
+    // Convert USDC to cents for Stripe
+    const amountCents = Math.round(payment.amount * 100);
+    
+    const result = await bridge.reconcilePayment({
+      agentId: payment.agentId,
+      amount: amountCents,
+      currency: "usd",
+      scope: payment.scope,
+      x402TxHash: payment.txHash,
+      timestamp: new Date(),
+      metadata: {
+        network: payment.network,
+        original_amount: payment.amount.toString(),
+        original_currency: payment.currency
+      }
+    });
+    
+    if (result.success) {
+      console.log(`Created invoice item: ${result.invoiceItemId}`);
+    }
+  }
+});
+```
+
+### Payment Record
+
+```typescript
+interface PaymentRecord {
+  agentId: string;           // Agent ID
+  amount: number;            // Amount in smallest currency unit (cents for USD)
+  currency: string;          // Currency code ("usd", "usdc", etc.)
+  scope?: string;            // Scope that was accessed
+  x402TxHash?: string;       // x402 transaction hash
+  timestamp: Date;           // Payment timestamp
+  metadata?: Record<string, string>;  // Custom metadata
+}
+```
+
+### Reconciliation Result
+
+```typescript
+interface ReconciliationResult {
+  success: boolean;            // Whether reconciliation succeeded
+  invoiceItemId?: string;      // Stripe invoice item ID
+  stripeCustomerId?: string;   // Stripe customer ID
+  error?: string;              // Error message if failed
+}
+```
+
+### Manual Customer Mapping
+
+Map existing Stripe customers to agents:
+
+```typescript
+// Map agent to existing Stripe customer
+bridge.mapCustomer("ag_xxx", "cus_stripe123");
+
+// Get mapping
+const mapping = bridge.getCustomerMapping("ag_xxx");
+console.log(mapping.stripeCustomerId); // "cus_stripe123"
+
+// Get all mappings
+const allMappings = bridge.getAllMappings();
+```
+
+### Stripe Dashboard
+
+Agent payments appear in your Stripe dashboard:
+
+- **Customers**: One customer per agent (e.g., "AgentDoor Agent: ag_xxx")
+- **Invoice Items**: Line items for each payment
+- **Metadata**: Contains `agentdoor_agent_id`, `x402_tx_hash`, `scope`
+
+### Invoice Creation
+
+Create monthly invoices from accumulated line items:
+
+```typescript
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+// Create invoice for an agent
+const invoice = await stripe.invoices.create({
+  customer: "cus_stripe123",
+  auto_advance: true,  // Finalize automatically
+});
+
+// Finalize and send
+await stripe.invoices.finalizeInvoice(invoice.id);
+```
+
+## x402 Bazaar Integration
+
+Publish your AgentDoor service to the x402 Bazaar marketplace.
+
+### Installation
+
+```bash
+npm install @agentdoor/bazaar
+```
+
+### Setup
+
+```typescript
+import { BazaarIntegration } from "@agentdoor/bazaar";
+import { BazaarClient } from "@x402/bazaar-client";  // Hypothetical client
+
+const bazaarClient = new BazaarClient({
+  apiKey: process.env.BAZAAR_API_KEY
+});
+
+const bazaar = new BazaarIntegration(
+  {
+    apiUrl: "https://bazaar.x402.org/api",
+    apiKey: process.env.BAZAAR_API_KEY,
+    autoSync: true
+  },
+  bazaarClient
+);
+```
+
+### Configuration
+
+```typescript
+interface BazaarConfig {
+  apiUrl?: string;      // Bazaar API URL (default: "https://bazaar.x402.org/api")
+  apiKey?: string;      // API key for authentication
+  autoSync?: boolean;   // Auto-sync on service changes (default: false)
+}
+```
+
+### Publish Service
+
+```typescript
+import { readFile } from "fs/promises";
+
+// Read your discovery document
+const discoveryDoc = JSON.parse(
+  await readFile("./public/.well-known/agentdoor.json", "utf-8")
+);
+
+// Publish to Bazaar
+const listing = await bazaar.publishService(
+  "https://api.example.com",
+  discoveryDoc
+);
+
+console.log(`Published to Bazaar with ID: ${listing.id}`);
+```
+
+### Bazaar Listing
+
+```typescript
+interface BazaarListing {
+  id: string;                // Unique listing ID
+  serviceUrl: string;        // Service base URL
+  serviceName: string;       // Service name
+  description: string;       // Service description
+  scopes: Array<{           // Available scopes
+    id: string;
+    price?: string;
+  }>;
+  paymentAddress: string;    // Wallet address
+  network: string;           // Blockchain network
+  currency: string;          // Payment currency
+  listed: boolean;           // Whether currently active
+  listedAt?: Date;           // When listed
+}
+```
+
+### Update Listing
+
+```typescript
+// Update existing listing
+const updated = await bazaar.updateListing(
+  "https://api.example.com",
+  updatedDiscoveryDoc
+);
+```
+
+### Delist Service
+
+```typescript
+// Remove from marketplace
+await bazaar.delistService("https://api.example.com");
+```
+
+### Search Marketplace
+
+```typescript
+// Find services by keyword
+const results = await bazaar.searchMarketplace("weather data");
+
+for (const listing of results) {
+  console.log(`${listing.serviceName}: ${listing.serviceUrl}`);
+  console.log(`Scopes: ${listing.scopes.map(s => s.id).join(", ")}`);
+  console.log(`Network: ${listing.network} ${listing.currency}`);
+}
+```
+
+### Auto-Sync from Registry
+
+Bulk publish services from a registry:
+
+```typescript
+import { RegistryClient } from "@agentdoor/registry";
+
+const registry = new RegistryClient("https://registry.agentdoor.dev");
+
+// Fetch all services from registry
+const services = await registry.listServices();
+
+// Sync to Bazaar
+const listings = await bazaar.syncFromRegistry(
+  services.map(s => ({
+    url: s.url,
+    discoveryDoc: s.discoveryDocument
+  }))
+);
+
+console.log(`Synced ${listings.length} services to Bazaar`);
+```
+
+## Registry Integration
+
+Discover and index AgentDoor services.
+
+### Installation
+
+```bash
+npm install @agentdoor/registry
+```
+
+### Setup
+
+```typescript
+import { RegistryClient } from "@agentdoor/registry";
+
+const registry = new RegistryClient("https://registry.agentdoor.dev", {
+  apiKey: process.env.REGISTRY_API_KEY
+});
+```
+
+### Register Your Service
+
+```typescript
+// Register with the AgentDoor registry
+await registry.register({
+  url: "https://api.example.com",
+  discoveryEndpoint: "https://api.example.com/.well-known/agentdoor.json",
+  metadata: {
+    category: "data",
+    tags: ["weather", "real-time"]
+  }
+});
+```
+
+### List Services
+
+```typescript
+// Get all registered services
+const services = await registry.listServices({
+  category: "data",
+  tags: ["weather"],
+  limit: 100
+});
+
+for (const service of services) {
+  console.log(service.url);
+  console.log(service.discoveryDocument);
+}
+```
+
+### Unregister
+
+```typescript
+await registry.unregister("https://api.example.com");
+```
+
+### Health Checks
+
+The registry periodically checks service health:
+
+```typescript
+// Get service health status
+const health = await registry.getHealth("https://api.example.com");
+
+console.log(`Status: ${health.status}`);
+console.log(`Last check: ${health.lastCheck}`);
+console.log(`Uptime: ${health.uptime}%`);
+```
+
+## Complete Integration Example
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+import { StripeBridge } from "@agentdoor/stripe";
+import { BazaarIntegration } from "@agentdoor/bazaar";
+import { RegistryClient } from "@agentdoor/registry";
+import Stripe from "stripe";
+
+// Initialize integrations
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const stripeBridge = new StripeBridge({
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY!,
+});
+stripeBridge.setStripeClient(stripe);
+
+const bazaar = new BazaarIntegration(
+  { apiKey: process.env.BAZAAR_API_KEY },
+  bazaarClient
+);
+
+const registry = new RegistryClient("https://registry.agentdoor.dev", {
+  apiKey: process.env.REGISTRY_API_KEY
+});
+
+// Create AgentDoor instance
+const door = createAgentDoor({
+  scopes: [
+    { id: "data.read", description: "Read access", price: "$0.001/req" },
+    { id: "data.write", description: "Write access", price: "$0.01/req" },
+  ],
+  
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET!,
+  },
+  
+  storage: {
+    driver: "postgres",
+    url: process.env.DATABASE_URL,
+  },
+  
+  // Integration callbacks
+  onAgentRegistered: async (agent) => {
+    console.log(`New agent: ${agent.id}`);
+  },
+  
+  onX402PaymentReceived: async (payment) => {
+    // Record in Stripe
+    await stripeBridge.reconcilePayment({
+      agentId: payment.agentId,
+      amount: Math.round(payment.amount * 100),
+      currency: "usd",
+      scope: payment.scope,
+      x402TxHash: payment.txHash,
+      timestamp: new Date(),
+    });
+  },
+});
+
+// Publish to marketplace and registry
+const discoveryDoc = JSON.parse(
+  await readFile("./public/.well-known/agentdoor.json", "utf-8")
+);
+
+await Promise.all([
+  bazaar.publishService("https://api.example.com", discoveryDoc),
+  registry.register({
+    url: "https://api.example.com",
+    discoveryEndpoint: "https://api.example.com/.well-known/agentdoor.json",
+  }),
+]);
+
+console.log("Service published to Bazaar and Registry");
+```
+
+## Best Practices
+
+### Stripe
+
+1. **Currency conversion**: Convert x402 crypto amounts to fiat cents correctly
+2. **Metadata**: Include transaction hashes and scope info in invoice items
+3. **Reconciliation**: Run reconciliation in background jobs, not inline
+4. **Error handling**: Don't fail requests if Stripe reconciliation fails
+5. **Invoicing**: Create monthly invoices automatically
+
+### Bazaar
+
+1. **Keep listings updated**: Sync when scopes or pricing changes
+2. **Delist gracefully**: Remove listings when service goes offline
+3. **Monitor health**: Track marketplace performance
+4. **Optimize search**: Use relevant keywords in service descriptions
+
+### Registry
+
+1. **Regular updates**: Re-register when service configuration changes
+2. **Health endpoints**: Implement `.well-known/health` for uptime monitoring
+3. **Metadata tags**: Use descriptive tags for discoverability
+4. **Unregister on shutdown**: Clean up when service is decommissioned

@@ -1,0 +1,602 @@
+---
+title: TypeScript SDK
+description: Reference for the @agentdoor/sdk npm package
+---
+
+The TypeScript SDK is the official client library for building Node.js and Deno agents that connect to AgentDoor-enabled services.
+
+## Installation
+
+<CodeGroup>
+```bash npm
+npm install @agentdoor/sdk
+```
+
+```bash yarn
+yarn add @agentdoor/sdk
+```
+
+```bash pnpm
+pnpm add @agentdoor/sdk
+```
+</CodeGroup>
+
+## Quick Start
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+const agent = new AgentDoor({
+  keyPath: "~/.agentdoor/keys.json"
+});
+
+const session = await agent.connect("https://api.example.com");
+const data = await session.get("/weather/forecast", {
+  params: { city: "san-francisco" }
+});
+
+console.log(data.data);
+```
+
+## AgentDoor Class
+
+The main entry point for the SDK. Manages keypairs, discovers services, registers agents, and returns authenticated sessions.
+
+### Constructor Options
+
+```typescript
+interface AgentDoorOptions {
+  /** Path to the keypair file. Defaults to ~/.agentdoor/keys.json */
+  keyPath?: string;
+  
+  /** Path to the credentials cache file. Defaults to ~/.agentdoor/credentials.json */
+  credentialsPath?: string;
+  
+  /** x402 wallet configuration for payment-enabled requests */
+  x402Wallet?: X402WalletConfig | string;
+  
+  /** Agent metadata to send during registration */
+  metadata?: Record<string, string>;
+  
+  /** Specific scopes to request during registration. If omitted, requests all available */
+  scopesRequested?: string[];
+  
+  /** Discovery fetch options */
+  discoveryOptions?: DiscoverOptions;
+  
+  /** Custom fetch function (useful for testing) */
+  fetchFn?: typeof globalThis.fetch;
+  
+  /** Whether to skip credential caching entirely (ephemeral mode) */
+  ephemeral?: boolean;
+}
+```
+
+### Example: Basic Setup
+
+```typescript
+const agent = new AgentDoor({
+  keyPath: "./my-agent-keys.json",
+  metadata: {
+    name: "weather-bot",
+    version: "1.0.0"
+  }
+});
+```
+
+### Example: Ephemeral Agent
+
+```typescript
+const agent = new AgentDoor({
+  ephemeral: true  // No credentials cached, fresh keypair each run
+});
+```
+
+### Example: x402 Wallet
+
+```typescript
+const agent = new AgentDoor({
+  x402Wallet: {
+    address: "0x1234567890abcdef",
+    network: "base",
+    currency: "USDC"
+  }
+});
+```
+
+## Methods
+
+### `connect(url: string): Promise<Session>`
+
+Connects to an AgentDoor-enabled service. Performs discovery, registration (if needed), and returns an authenticated session.
+
+**Parameters:**
+- `url` — Base URL of the service (e.g. `https://api.example.com`)
+
+**Returns:** A `Session` object for making authenticated requests
+
+**Example:**
+
+```typescript
+const session = await agent.connect("https://api.example.com");
+
+console.log("Agent ID:", session.agentId);
+console.log("Scopes:", session.scopes);
+console.log("Base URL:", session.baseUrl);
+```
+
+**Flow:**
+
+<Steps>
+  <Step title="Discovery">
+    Fetches `/.well-known/agentdoor.json` from the target URL
+  </Step>
+  <Step title="Check Cache">
+    Looks for cached credentials for this service. If valid credentials exist, skips to step 5.
+  </Step>
+  <Step title="Register">
+    Sends the agent's public key and requested scopes to `/agentdoor/register`
+  </Step>
+  <Step title="Verify">
+    Signs the challenge nonce and sends it to `/agentdoor/register/verify`
+  </Step>
+  <Step title="Cache Credentials">
+    Stores the API key, token, and scopes in `~/.agentdoor/credentials.json`
+  </Step>
+  <Step title="Return Session">
+    Returns an authenticated `Session` object ready for API calls
+  </Step>
+</Steps>
+
+### `publicKey: string`
+
+Returns the agent's Ed25519 public key in base64 format.
+
+```typescript
+console.log("My public key:", agent.publicKey);
+// Output: "Wn7t3Z8mK4vL9pQ2xR5yJ1aB6cD8eF0gH3iK5mN7oP9="
+```
+
+## Session Class
+
+Represents an authenticated connection to a service. Created by `agent.connect()` and used to make API requests.
+
+### Properties
+
+```typescript
+class Session {
+  /** Base URL of the connected service */
+  readonly baseUrl: string;
+  
+  /** Scopes granted by the service */
+  readonly scopes: string[];
+  
+  /** Agent ID at this service */
+  readonly agentId: string;
+  
+  /** The discovery document for this service */
+  readonly discovery: AgentDoorDiscoveryDocument;
+}
+```
+
+### HTTP Methods
+
+All methods return a `SessionResponse<T>` with the following shape:
+
+```typescript
+interface SessionResponse<T = unknown> {
+  status: number;          // HTTP status code
+  statusText: string;      // HTTP status text
+  headers: Headers;        // Response headers
+  data: T;                 // Parsed JSON body
+  ok: boolean;             // Whether status is 2xx
+}
+```
+
+#### `get<T>(path: string, options?: RequestOptions): Promise<SessionResponse<T>>`
+
+```typescript
+const response = await session.get("/weather/forecast", {
+  params: { city: "austin", days: "5" }
+});
+
+if (response.ok) {
+  console.log(response.data);
+}
+```
+
+#### `post<T>(path: string, options?: RequestOptions): Promise<SessionResponse<T>>`
+
+```typescript
+const response = await session.post("/analytics/events", {
+  body: {
+    event: "page_view",
+    timestamp: Date.now()
+  }
+});
+```
+
+#### `put<T>(path: string, options?: RequestOptions): Promise<SessionResponse<T>>`
+
+```typescript
+const response = await session.put("/user/profile", {
+  body: { name: "Weather Bot", version: "2.0" }
+});
+```
+
+#### `delete<T>(path: string, options?: RequestOptions): Promise<SessionResponse<T>>`
+
+```typescript
+const response = await session.delete("/cache/forecast", {
+  params: { city: "san-francisco" }
+});
+```
+
+#### `patch<T>(path: string, options?: RequestOptions): Promise<SessionResponse<T>>`
+
+```typescript
+const response = await session.patch("/settings", {
+  body: { units: "metric" }
+});
+```
+
+### Request Options
+
+```typescript
+interface RequestOptions {
+  /** Query parameters appended to the URL */
+  params?: Record<string, string>;
+  
+  /** Additional HTTP headers */
+  headers?: Record<string, string>;
+  
+  /** JSON request body (auto-serialized) */
+  body?: unknown;
+  
+  /** Whether to attach the x402 payment header */
+  x402?: boolean;
+  
+  /** Request timeout in milliseconds. Defaults to 30 seconds */
+  timeoutMs?: number;
+  
+  /** Custom fetch function override */
+  fetchFn?: typeof globalThis.fetch;
+}
+```
+
+### Example: Custom Headers
+
+```typescript
+const response = await session.get("/data", {
+  headers: {
+    "X-Custom-Header": "value",
+    "Accept-Language": "en-US"
+  }
+});
+```
+
+### Example: Paid Request
+
+```typescript
+const agent = new AgentDoor({
+  x402Wallet: "0x1234567890abcdef"  // Your wallet address
+});
+
+const session = await agent.connect("https://premium-api.com");
+
+const response = await session.get("/premium/data", {
+  x402: true  // Attach payment header
+});
+```
+
+## Keystore Functions
+
+Low-level functions for managing Ed25519 keypairs. Most users won't need these directly — the `AgentDoor` class handles keypair management automatically.
+
+### `generateKeypair(): Keypair`
+
+Generate a fresh Ed25519 keypair.
+
+```typescript
+import { generateKeypair } from "@agentdoor/sdk";
+
+const keypair = generateKeypair();
+console.log("Public key:", keypair.publicKeyBase64);
+```
+
+### `saveKeypair(keypair: Keypair, filePath: string): void`
+
+Save a keypair to disk as JSON.
+
+```typescript
+import { generateKeypair, saveKeypair } from "@agentdoor/sdk";
+
+const keypair = generateKeypair();
+saveKeypair(keypair, "./my-keys.json");
+```
+
+### `loadKeypair(filePath: string): Keypair | null`
+
+Load a keypair from disk. Returns `null` if the file doesn't exist.
+
+```typescript
+import { loadKeypair } from "@agentdoor/sdk";
+
+const keypair = loadKeypair("./my-keys.json");
+if (keypair) {
+  console.log("Loaded keypair:", keypair.publicKeyBase64);
+}
+```
+
+### `loadOrCreateKeypair(filePath: string): Keypair`
+
+Load an existing keypair from disk, or generate and save a new one if none exists.
+
+```typescript
+import { loadOrCreateKeypair } from "@agentdoor/sdk";
+
+const keypair = loadOrCreateKeypair("./my-keys.json");
+// First run: generates and saves a new keypair
+// Subsequent runs: loads the existing keypair
+```
+
+### `signMessage(message: string, secretKey: Uint8Array): string`
+
+Sign a message with an Ed25519 secret key. Returns a base64-encoded signature.
+
+```typescript
+import { signMessage, loadKeypair } from "@agentdoor/sdk";
+
+const keypair = loadKeypair("./my-keys.json")!;
+const signature = signMessage("hello world", keypair.secretKey);
+console.log("Signature:", signature);
+```
+
+### `verifySignature(message: string, signature: string, publicKey: Uint8Array): boolean`
+
+Verify an Ed25519 signature.
+
+```typescript
+import { verifySignature, decodeBase64 } from "@agentdoor/sdk";
+
+const isValid = verifySignature(
+  "hello world",
+  signature,
+  publicKey
+);
+console.log("Signature valid:", isValid);
+```
+
+## Discovery Functions
+
+### `discover(baseUrl: string, options?: DiscoverOptions): Promise<AgentDoorDiscoveryDocument>`
+
+Fetch and parse the AgentDoor discovery document from a service.
+
+```typescript
+import { discover } from "@agentdoor/sdk";
+
+const doc = await discover("https://api.example.com");
+
+console.log("Service:", doc.service_name);
+console.log("Scopes:", doc.scopes_available);
+```
+
+**Options:**
+
+```typescript
+interface DiscoverOptions {
+  /** Cache TTL in milliseconds. Defaults to 1 hour */
+  cacheTtlMs?: number;
+  
+  /** Skip the cache and force a fresh fetch */
+  forceRefresh?: boolean;
+  
+  /** Custom fetch function */
+  fetchFn?: typeof globalThis.fetch;
+  
+  /** Request timeout in milliseconds. Defaults to 10 seconds */
+  timeoutMs?: number;
+}
+```
+
+### `clearDiscoveryCache(baseUrl?: string): void`
+
+Clear the in-memory discovery cache. If `baseUrl` is provided, only that entry is cleared. Otherwise, the entire cache is cleared.
+
+```typescript
+import { clearDiscoveryCache } from "@agentdoor/sdk";
+
+clearDiscoveryCache("https://api.example.com");
+```
+
+## Credential Store
+
+Manages per-service credentials on disk. Used internally by `AgentDoor` but can be used directly for advanced use cases.
+
+### `CredentialStore`
+
+```typescript
+import { CredentialStore, DEFAULT_CREDENTIALS_PATH } from "@agentdoor/sdk";
+
+const store = new CredentialStore(DEFAULT_CREDENTIALS_PATH);
+
+// Get cached credentials
+const creds = store.get("https://api.example.com");
+if (creds) {
+  console.log("API Key:", creds.apiKey);
+  console.log("Scopes:", creds.scopesGranted);
+}
+
+// Check if credentials are still valid
+if (store.hasValidCredentials("https://api.example.com")) {
+  console.log("Credentials are valid!");
+}
+
+// Remove credentials
+store.remove("https://api.example.com");
+
+// List all services with cached credentials
+const services = store.listServices();
+console.log("Cached services:", services);
+```
+
+## x402 Payment Functions
+
+### `buildPaymentHeader(walletConfig: X402WalletConfig, context: RequestContext): string`
+
+Build an X-PAYMENT header value for a request. Returns a base64-encoded JSON payload.
+
+```typescript
+import { buildPaymentHeader } from "@agentdoor/sdk";
+
+const header = buildPaymentHeader(
+  {
+    address: "0x1234567890abcdef",
+    network: "base",
+    currency: "USDC",
+    maxAmountPerRequest: "1.00"
+  },
+  {
+    path: "/premium/data",
+    method: "GET"
+  }
+);
+
+console.log("X-PAYMENT header:", header);
+```
+
+### `buildSignedPaymentHeader(walletConfig, context): Promise<string>`
+
+Build a signed X-PAYMENT header with cryptographic proof from the wallet.
+
+```typescript
+import { buildSignedPaymentHeader } from "@agentdoor/sdk";
+
+const header = await buildSignedPaymentHeader(
+  {
+    address: "0x1234567890abcdef",
+    network: "base",
+    currency: "USDC",
+    signPayload: async (payload) => {
+      // Use your wallet library to sign the payload
+      return walletSignature;
+    }
+  },
+  { path: "/premium/data", method: "GET" }
+);
+```
+
+### `decodePaymentHeader(headerValue: string): X402PaymentPayload`
+
+Decode a base64-encoded X-PAYMENT header back to a payload object. Useful for debugging.
+
+```typescript
+import { decodePaymentHeader } from "@agentdoor/sdk";
+
+const payload = decodePaymentHeader(header);
+console.log("Payment from:", payload.from);
+console.log("Max amount:", payload.maxAmount);
+```
+
+## Error Handling
+
+### AgentDoorError
+
+Thrown when agent operations fail (discovery, registration, authentication).
+
+```typescript
+import { AgentDoor, AgentDoorError } from "@agentdoor/sdk";
+
+try {
+  const session = await agent.connect("https://broken-api.com");
+} catch (error) {
+  if (error instanceof AgentDoorError) {
+    console.error("Error code:", error.code);
+    console.error("Message:", error.message);
+  }
+}
+```
+
+**Error Codes:**
+- `NO_MATCHING_SCOPES` — No requested scopes match what the service offers
+- `INVALID_REGISTER_RESPONSE` — Registration response is malformed
+- `INVALID_VERIFY_RESPONSE` — Verification response is malformed
+- `INVALID_AUTH_RESPONSE` — Auth response is malformed
+- `ALREADY_REGISTERED` — Agent already registered (HTTP 409)
+- `RATE_LIMITED` — Too many requests (HTTP 429)
+- `CHALLENGE_EXPIRED` — Challenge nonce expired (HTTP 410)
+- `HTTP_ERROR` — Generic HTTP error
+- `NETWORK_ERROR` — Network request failed
+- `TIMEOUT` — Request timed out
+- `INVALID_JSON` — Response body is not valid JSON
+
+### SessionError
+
+Thrown when session requests fail.
+
+```typescript
+import { SessionError } from "@agentdoor/sdk";
+
+try {
+  const response = await session.get("/invalid-path");
+} catch (error) {
+  if (error instanceof SessionError) {
+    console.error("Status code:", error.statusCode);
+    console.error("Message:", error.message);
+  }
+}
+```
+
+## Advanced Usage
+
+### Custom Fetch Function
+
+Inject a custom fetch implementation for testing or special transport requirements:
+
+```typescript
+const agent = new AgentDoor({
+  fetchFn: async (url, options) => {
+    console.log(`Fetching ${url}`);
+    return globalThis.fetch(url, options);
+  }
+});
+```
+
+### Multiple Services
+
+Connect to multiple services with a single agent:
+
+```typescript
+const agent = new AgentDoor();
+
+const weatherApi = await agent.connect("https://weather-api.com");
+const stockApi = await agent.connect("https://stock-api.com");
+
+const weather = await weatherApi.get("/forecast");
+const stocks = await stockApi.get("/quote/AAPL");
+```
+
+Each service maintains its own credentials and session state.
+
+### Requesting Specific Scopes
+
+```typescript
+const agent = new AgentDoor({
+  scopesRequested: ["weather:read", "weather:forecast"]
+});
+
+const session = await agent.connect("https://weather-api.com");
+console.log("Granted scopes:", session.scopes);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="/agent/python-sdk">
+    Build agents in Python with async/await support
+  </Card>
+  <Card title="Examples" icon="code" href="/agent/examples">
+    See complete agent implementations including LangChain integration
+  </Card>
+</CardGroup>

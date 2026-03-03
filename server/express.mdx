@@ -1,0 +1,315 @@
+---
+title: Express
+description: Add AgentDoor to your Express.js application
+---
+
+Integrate AgentDoor into your Express.js API in just 3 lines of code. The `@agentdoor/express` adapter provides middleware that handles agent discovery, registration, authentication, and request enrichment.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/express @agentdoor/core
+```
+
+```bash pnpm
+pnpm add @agentdoor/express @agentdoor/core
+```
+
+```bash yarn
+yarn add @agentdoor/express @agentdoor/core
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Import AgentDoor">
+
+Import the `agentdoor` middleware from `@agentdoor/express`:
+
+```typescript
+import express from "express";
+import { agentdoor } from "@agentdoor/express";
+```
+
+</Step>
+
+<Step title="Configure and mount">
+
+Add the AgentDoor middleware to your Express app:
+
+```typescript
+const app = express();
+app.use(express.json());
+
+app.use(
+  agentdoor({
+    scopes: [
+      {
+        id: "data.read",
+        description: "Read application data",
+        price: "$0.001/req",
+        rateLimit: "1000/hour",
+      },
+      {
+        id: "data.write",
+        description: "Write application data",
+        price: "$0.01/req",
+        rateLimit: "100/hour",
+      },
+    ],
+    pricing: {
+      "data.read": "$0.001/req",
+      "data.write": "$0.01/req",
+    },
+    rateLimit: { requests: 1000, window: "1h" },
+  })
+);
+```
+
+</Step>
+
+<Step title="Access agent context">
+
+Use `req.isAgent` and `req.agent` in your route handlers:
+
+```typescript
+app.get("/api/data", (req, res) => {
+  if (req.isAgent) {
+    console.log(`Agent ${req.agent.id} with scopes: ${req.agent.scopes}`);
+  }
+  res.json({ data: "hello" });
+});
+
+app.listen(3000);
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full working example with agent authentication:
+
+```typescript index.ts
+import express from "express";
+import { agentdoor } from "@agentdoor/express";
+
+const app = express();
+app.use(express.json());
+
+// AgentDoor middleware
+app.use(
+  agentdoor({
+    scopes: [
+      {
+        id: "weather.read",
+        description: "Read current weather data",
+        price: "$0.001/req",
+        rateLimit: "1000/hour",
+      },
+      {
+        id: "weather.forecast",
+        description: "7-day weather forecasts",
+        price: "$0.01/req",
+        rateLimit: "100/hour",
+      },
+    ],
+    pricing: {
+      "weather.read": "$0.001/req",
+      "weather.forecast": "$0.01/req",
+    },
+    rateLimit: { default: "1000/hour" },
+    x402: {
+      network: "base",
+      currency: "USDC",
+      paymentAddress: process.env.X402_WALLET || "0xYourWalletAddress",
+    },
+  })
+);
+
+// Your API routes
+app.get("/api/weather", (req, res) => {
+  const city = (req.query.city as string) || "san-francisco";
+  
+  if (req.isAgent) {
+    console.log(`Agent ${req.agent.id} requested weather for ${city}`);
+  }
+  
+  res.json({
+    city,
+    temp: 62,
+    condition: "foggy",
+    timestamp: new Date().toISOString(),
+    requestedBy: req.isAgent ? `agent:${req.agent.id}` : "human",
+  });
+});
+
+app.listen(3000, () => {
+  console.log("Server running on http://localhost:3000");
+  console.log("Discovery: http://localhost:3000/.well-known/agentdoor.json");
+});
+```
+
+## How It Works
+
+The `agentdoor()` middleware automatically:
+
+1. **Mounts discovery endpoint**: `GET /.well-known/agentdoor.json`
+2. **Mounts registration endpoints**: 
+   - `POST /agentdoor/register` (step 1: get challenge)
+   - `POST /agentdoor/register/verify` (step 2: verify signature)
+3. **Mounts auth endpoint**: `POST /agentdoor/auth` (returning agents)
+4. **Mounts health check**: `GET /agentdoor/health`
+5. **Enriches requests**: Adds `req.isAgent` and `req.agent` to all subsequent requests
+
+## Advanced Configuration
+
+### Custom Storage Backend
+
+By default, AgentDoor uses an in-memory store. For production, use a persistent store:
+
+```typescript
+import { agentdoor } from "@agentdoor/express";
+import { SQLiteStore } from "@agentdoor/core";
+
+const store = new SQLiteStore("./agents.db");
+
+app.use(
+  agentdoor({
+    scopes: [/* ... */],
+    store, // Use persistent storage
+  })
+);
+```
+
+### Disable Auth Guard
+
+If you want to manually control which routes require agent auth:
+
+```typescript
+app.use(
+  agentdoor({
+    scopes: [/* ... */],
+    enableAuthGuard: false, // Don't auto-verify requests
+  })
+);
+
+// Manually apply auth guard to specific routes
+import { createAuthGuard } from "@agentdoor/express";
+
+const authGuard = createAuthGuard(store, jwtSecret);
+app.use("/api/protected/*", authGuard);
+```
+
+### Webhooks & P1 Features
+
+Enable webhooks, reputation gates, and spending caps:
+
+```typescript
+app.use(
+  agentdoor({
+    scopes: [/* ... */],
+    
+    // Webhooks
+    webhooks: {
+      endpoints: [{ url: "https://hooks.example.com/agentdoor" }],
+      secret: process.env.WEBHOOK_SECRET,
+    },
+    
+    // Reputation
+    reputation: {
+      gates: [
+        { minReputation: 30, action: "block" },
+        { minReputation: 50, action: "warn" },
+      ],
+    },
+    
+    // Spending caps
+    spendingCaps: {
+      defaultCaps: [
+        { amount: 10, currency: "USDC", period: "daily", type: "hard" },
+      ],
+    },
+  })
+);
+```
+
+## Request Enrichment
+
+AgentDoor enriches Express requests with agent context:
+
+```typescript
+declare global {
+  namespace Express {
+    interface Request {
+      agent: {
+        id: string;
+        publicKey: string;
+        scopes: string[];
+        metadata: Record<string, string>;
+        rateLimit: { requests: number; window: string };
+      } | null;
+      isAgent: boolean;
+    }
+  }
+}
+```
+
+## API Reference
+
+### `agentdoor(options)`
+
+Creates an Express Router with all AgentDoor routes and auth guard.
+
+**Options:**
+
+- `scopes` (required): Array of scope definitions
+- `pricing`: Price per scope (e.g., `{ "data.read": "$0.001/req" }`)
+- `rateLimit`: Default rate limit config
+- `x402`: X402 payment config (network, currency, paymentAddress)
+- `store`: Custom agent store (defaults to `MemoryStore`)
+- `enableAuthGuard`: Auto-apply auth guard to all routes (default: `true`)
+- `enableBodyParser`: Auto-parse JSON bodies on AgentDoor routes (default: `true`)
+- `webhooks`: Webhook configuration
+- `reputation`: Reputation gates configuration
+- `spendingCaps`: Spending caps configuration
+
+**Returns:** Express `Router` instance
+
+### `createAuthGuard(store, secret)`
+
+Creates a standalone auth guard middleware for manual route protection.
+
+**Parameters:**
+- `store`: Agent store instance
+- `secret`: JWT secret for token validation
+
+**Returns:** Express middleware function
+
+## TypeScript Support
+
+The package includes full TypeScript definitions. Import types:
+
+```typescript
+import type {
+  AgentDoorExpressOptions,
+  AgentContext,
+  ScopeDefinition,
+} from "@agentdoor/express";
+```
+
+<Note>
+The auth guard middleware does **not** block unauthenticated requests. It only enriches requests with agent context. Your route handlers decide access policy.
+</Note>
+
+## Next Steps
+
+- [Configure X402 Payments](/concepts/payments)
+- [Set up Persistent Storage](/advanced/storage)
+- [Monitor with Webhooks](/advanced/webhooks)

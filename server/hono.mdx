@@ -1,0 +1,401 @@
+---
+title: Hono
+description: Add AgentDoor to your Hono application
+---
+
+Integrate AgentDoor into your Hono app with full edge runtime support. Works on Cloudflare Workers, Deno, Bun, and Node.js.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/hono @agentdoor/core hono
+```
+
+```bash pnpm
+pnpm add @agentdoor/hono @agentdoor/core hono
+```
+
+```bash yarn
+yarn add @agentdoor/hono @agentdoor/core hono
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Import and configure">
+
+```typescript
+import { Hono } from "hono";
+import { agentdoor, type AgentDoorVariables } from "@agentdoor/hono";
+
+const app = new Hono<{ Variables: AgentDoorVariables }>();
+```
+
+</Step>
+
+<Step title="Mount AgentDoor routes">
+
+```typescript
+agentdoor(app, {
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+});
+```
+
+</Step>
+
+<Step title="Access agent context">
+
+```typescript
+app.get("/api/data", (c) => {
+  if (c.get("isAgent")) {
+    const agent = c.get("agent");
+    return c.json({ agentId: agent?.id });
+  }
+  return c.json({ data: "hello" });
+});
+
+export default app;
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full Hono app with agent authentication:
+
+```typescript src/index.ts
+import { Hono } from "hono";
+import { agentdoor, type AgentDoorVariables } from "@agentdoor/hono";
+
+const app = new Hono<{ Variables: AgentDoorVariables }>();
+
+// Mount AgentDoor
+agentdoor(app, {
+  scopes: [
+    {
+      id: "stocks.read",
+      description: "Read stock market data",
+      price: "$0.005/req",
+      rateLimit: "500/hour",
+    },
+    {
+      id: "stocks.historical",
+      description: "Historical stock data (up to 5 years)",
+      price: "$0.05/req",
+      rateLimit: "50/hour",
+    },
+  ],
+  pricing: {
+    "stocks.read": "$0.005/req",
+    "stocks.historical": "$0.05/req",
+  },
+  rateLimit: { requests: 500, window: "1h" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: "0xYourWalletAddress",
+  },
+});
+
+// Sample data
+const stocks: Record<string, { price: number; change: number; volume: number }> = {
+  AAPL: { price: 198.5, change: 2.3, volume: 45_200_000 },
+  GOOGL: { price: 175.2, change: -1.1, volume: 22_100_000 },
+  MSFT: { price: 420.8, change: 5.6, volume: 18_900_000 },
+};
+
+// GET /api/stocks?symbol=AAPL
+app.get("/api/stocks", (c) => {
+  const symbol = c.req.query("symbol")?.toUpperCase();
+  const isAgent = c.get("isAgent");
+  const agent = c.get("agent");
+  
+  if (symbol) {
+    const stock = stocks[symbol];
+    if (!stock) {
+      return c.json(
+        { error: "Symbol not found", available: Object.keys(stocks) },
+        404
+      );
+    }
+    return c.json({
+      symbol,
+      ...stock,
+      timestamp: new Date().toISOString(),
+      requestedBy: isAgent ? `agent:${agent?.id}` : "human",
+    });
+  }
+  
+  // Return all stocks
+  return c.json({
+    stocks: Object.entries(stocks).map(([symbol, data]) => ({
+      symbol,
+      ...data,
+    })),
+    timestamp: new Date().toISOString(),
+    requestedBy: isAgent ? `agent:${agent?.id}` : "human",
+  });
+});
+
+export default app;
+```
+
+## How It Works
+
+The `agentdoor()` function:
+
+1. **Mounts discovery**: `GET /.well-known/agentdoor.json`
+2. **Mounts registration**: 
+   - `POST /agentdoor/register`
+   - `POST /agentdoor/register/verify`
+3. **Mounts auth**: `POST /agentdoor/auth`
+4. **Applies auth guard**: Validates `Authorization` headers on protected routes
+5. **Sets context variables**: `c.get("agent")` and `c.get("isAgent")`
+
+## Alternative: Standalone Middleware
+
+Instead of the `agentdoor()` helper, use the standalone middleware:
+
+```typescript
+import { Hono } from "hono";
+import { createAgentDoorMiddleware } from "@agentdoor/hono";
+
+const app = new Hono();
+
+app.use(
+  "*",
+  createAgentDoorMiddleware({
+    scopes: [{ id: "data.read", description: "Read data" }],
+  })
+);
+
+app.get("/api/data", (c) => {
+  // c.get("agent") and c.get("isAgent") are available
+});
+```
+
+## Advanced Configuration
+
+### Protected Paths
+
+Customize which paths require agent authentication:
+
+```typescript
+agentdoor(app, {
+  scopes: [/* ... */],
+  protectedPaths: ["/api"], // Only /api/* requires auth
+  passthrough: false, // Block unauthenticated requests (default)
+});
+```
+
+### Passthrough Mode
+
+Allow unauthenticated requests:
+
+```typescript
+agentdoor(app, {
+  scopes: [/* ... */],
+  passthrough: true, // Don't block unauthenticated requests
+});
+
+app.get("/api/data", (c) => {
+  if (!c.get("isAgent")) {
+    return c.json({ error: "Agent required" }, 401);
+  }
+  // Handle agent request
+});
+```
+
+### Base Path
+
+Mount AgentDoor routes under a custom prefix:
+
+```typescript
+agentdoor(app, {
+  scopes: [/* ... */],
+  basePath: "/v1", // Routes at /v1/agentdoor/*, /v1/.well-known/*
+});
+```
+
+### Custom Storage
+
+Use a persistent store instead of in-memory:
+
+```typescript
+import { SQLiteStore } from "@agentdoor/core";
+
+const store = new SQLiteStore("./agents.db");
+
+agentdoor(app, {
+  scopes: [/* ... */],
+  store,
+});
+```
+
+### Webhooks & P1 Features
+
+```typescript
+agentdoor(app, {
+  scopes: [/* ... */],
+  
+  webhooks: {
+    endpoints: [{ url: "https://hooks.example.com/agentdoor" }],
+    secret: process.env.WEBHOOK_SECRET,
+  },
+  
+  reputation: {
+    gates: [
+      { minReputation: 30, action: "block" },
+      { minReputation: 50, action: "warn" },
+    ],
+  },
+  
+  spendingCaps: {
+    defaultCaps: [
+      { amount: 10, currency: "USDC", period: "daily", type: "hard" },
+    ],
+  },
+});
+```
+
+## Context Variables
+
+AgentDoor sets these variables on the Hono context:
+
+```typescript
+type AgentDoorVariables = {
+  agent: AgentContext | null;
+  isAgent: boolean;
+};
+
+type AgentContext = {
+  id: string;
+  publicKey: string;
+  scopes: string[];
+  rateLimit: { requests: number; window: string };
+  metadata: Record<string, string>;
+};
+```
+
+Access them with `c.get()`:
+
+```typescript
+app.get("/api/data", (c) => {
+  const isAgent = c.get("isAgent");
+  const agent = c.get("agent");
+  
+  if (isAgent && agent) {
+    console.log(agent.id, agent.scopes);
+  }
+});
+```
+
+## Cloudflare Workers
+
+Hono works perfectly on Cloudflare Workers:
+
+```typescript
+import { Hono } from "hono";
+import { agentdoor, type AgentDoorVariables } from "@agentdoor/hono";
+
+type Bindings = {
+  X402_WALLET: string;
+};
+
+const app = new Hono<{ Bindings: Bindings; Variables: AgentDoorVariables }>();
+
+agentdoor(app, {
+  scopes: [/* ... */],
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: "0x...", // Or use env.X402_WALLET at runtime
+  },
+});
+
+app.get("/api/data", (c) => {
+  // Access Cloudflare bindings
+  const wallet = c.env.X402_WALLET;
+  
+  if (c.get("isAgent")) {
+    return c.json({ data: "agent" });
+  }
+  return c.json({ data: "human" });
+});
+
+export default app;
+```
+
+## API Reference
+
+### `agentdoor(app, config)`
+
+Mounts all AgentDoor routes and middleware onto a Hono app instance.
+
+**Parameters:**
+
+- `app`: Hono app instance
+- `config`: Configuration object
+  - `scopes` (required): Scope definitions
+  - `protectedPaths`: Path prefixes requiring auth (default: `["/api"]`)
+  - `passthrough`: Allow unauthenticated requests (default: `false`)
+  - `basePath`: Base path for AgentDoor routes (default: `""`)
+  - `store`: Custom agent store
+  - `webhooks`, `reputation`, `spendingCaps`: P1 features
+
+### `createAgentDoorMiddleware(config)`
+
+Creates a standalone Hono middleware that handles all AgentDoor logic.
+
+**Returns:** Hono `MiddlewareHandler`
+
+### `createAuthGuardMiddleware(config, store?, repManager?)`
+
+Creates a standalone auth guard middleware for manual route protection.
+
+**Returns:** Hono `MiddlewareHandler`
+
+### `buildDiscoveryDocument(config)`
+
+Builds a discovery document object.
+
+**Returns:** Discovery document object
+
+## TypeScript Support
+
+```typescript
+import type {
+  AgentDoorHonoConfig,
+  AgentDoorVariables,
+} from "@agentdoor/hono";
+
+import type { AgentContext } from "@agentdoor/core";
+```
+
+<Note>
+Hono uses Web Crypto APIs, making it fully compatible with edge runtimes like Cloudflare Workers, Deno, and Bun.
+</Note>
+
+## Next Steps
+
+- [Deploy to Cloudflare Workers](/deployment/cloudflare)
+- [Configure X402 Payments](/concepts/payments)
+- [Set up Webhooks](/advanced/webhooks)

@@ -1,0 +1,236 @@
+---
+title: Agent SDK Overview
+description: Build AI agents that securely connect to any AgentDoor-enabled service
+---
+
+The AgentDoor Agent SDK provides a simple, headless authentication system for AI agents. Instead of browser automation and OAuth flows, your agents use Ed25519 keypairs to discover, register with, and authenticate against any service that implements the AgentDoor protocol.
+
+## What is the Agent SDK?
+
+The Agent SDK is a client library that handles the complete lifecycle of agent-to-service authentication:
+
+1. **Discovery** — Fetch service capabilities from `/.well-known/agentdoor.json`
+2. **Registration** — Register your agent's public key and request scopes
+3. **Challenge-Response** — Prove ownership of your private key by signing a nonce
+4. **Authentication** — Receive API keys and short-lived JWT tokens
+5. **Requests** — Make authenticated API calls with automatic token refresh
+6. **Payments** — Optionally attach x402 payment headers for paid API access
+
+## Why Use AgentDoor?
+
+<CardGroup cols={2}>
+  <Card title="No Browser Required" icon="code">
+    Agents authenticate using cryptographic keypairs. No need for headless browsers, session cookies, or OAuth redirect flows.
+  </Card>
+  <Card title="Service Discovery" icon="radar">
+    Services advertise their capabilities, scopes, and pricing through a standard discovery document. Agents can autonomously explore new APIs.
+  </Card>
+  <Card title="Built-in Payments" icon="credit-card">
+    Native x402 support lets agents pay for API access using on-chain wallets. No credit cards or manual billing.
+  </Card>
+  <Card title="Credential Caching" icon="database">
+    API keys and tokens are cached locally. Agents skip re-registration on subsequent connections to the same service.
+  </Card>
+</CardGroup>
+
+## Quick Example
+
+<CodeGroup>
+```typescript TypeScript
+import { AgentDoor } from "@agentdoor/sdk";
+
+// Initialize with a persistent keypair
+const agent = new AgentDoor({
+  keyPath: "~/.agentdoor/keys.json"
+});
+
+// Connect to any AgentDoor-enabled service
+const session = await agent.connect("https://api.example.com");
+
+// Make authenticated requests
+const response = await session.get("/weather/forecast", {
+  params: { city: "san-francisco" }
+});
+
+console.log(response.data);
+```
+
+```python Python
+from agentdoor import Agent, AgentConfig
+
+# Initialize the agent
+agent = Agent(config=AgentConfig(agent_name="my-agent"))
+
+# Connect to a service
+await agent.connect("https://api.example.com")
+
+# Register with requested scopes
+await agent.register(scopes=["read", "write"])
+
+# Make authenticated requests
+response = await agent.request("GET", "/weather/forecast")
+```
+</CodeGroup>
+
+## How It Works
+
+### 1. Discovery
+
+When your agent connects to a service, the SDK fetches the discovery document from `/.well-known/agentdoor.json`. This document tells your agent:
+
+- What scopes are available
+- What authentication methods are supported
+- Whether payments are required (and what payment networks/currencies)
+- Rate limits and pricing
+
+```json Example Discovery Document
+{
+  "agentdoor_version": "1.0",
+  "service_name": "Weather API",
+  "registration_endpoint": "/agentdoor/register",
+  "auth_endpoint": "/agentdoor/auth",
+  "scopes_available": [
+    {
+      "id": "weather:read",
+      "description": "Read current weather data",
+      "price": "0.01 USDC per request"
+    }
+  ],
+  "payment": {
+    "protocol": "x402",
+    "networks": ["base", "solana"],
+    "currency": ["USDC"]
+  }
+}
+```
+
+### 2. Registration
+
+Your agent sends its Ed25519 public key to the service's registration endpoint. The service responds with a challenge nonce:
+
+```typescript
+// SDK handles this automatically
+const registerResponse = await fetch(`${baseUrl}/agentdoor/register`, {
+  method: "POST",
+  body: JSON.stringify({
+    public_key: agent.publicKey,
+    scopes_requested: ["weather:read"],
+    metadata: { sdk: "agentdoor-sdk", version: "0.1.0" }
+  })
+});
+
+// Response:
+// {
+//   "agent_id": "agt_abc123",
+//   "challenge": {
+//     "nonce": "xyz789",
+//     "message": "agentdoor:register:agt_abc123:xyz789",
+//     "expires_at": "2025-03-04T00:30:00Z"
+//   }
+// }
+```
+
+### 3. Challenge-Response
+
+Your agent signs the challenge message with its private key and sends the signature back to the verification endpoint:
+
+```typescript
+// SDK handles this automatically
+const signature = signMessage(challenge.message, keypair.secretKey);
+
+const verifyResponse = await fetch(`${baseUrl}/agentdoor/register/verify`, {
+  method: "POST",
+  body: JSON.stringify({
+    agent_id: "agt_abc123",
+    signature: signature
+  })
+});
+
+// Response:
+// {
+//   "agent_id": "agt_abc123",
+//   "api_key": "agk_live_xyz123",
+//   "token": "eyJhbGc...",
+//   "scopes_granted": ["weather:read"],
+//   "token_expires_at": "2025-03-03T01:00:00Z"
+// }
+```
+
+### 4. Making Requests
+
+Once registered, your agent can make authenticated API calls. The SDK automatically:
+
+- Attaches the `Authorization: Bearer <token>` header
+- Refreshes expired tokens using the `/agentdoor/auth` endpoint
+- Handles 401 responses by requesting a fresh token
+- Optionally attaches x402 payment headers
+
+## Available SDKs
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/agent/typescript-sdk">
+    Full-featured SDK for Node.js and Deno agents. Supports x402 payments, credential caching, and custom fetch functions.
+  </Card>
+  <Card title="Python SDK" icon="python" href="/agent/python-sdk">
+    Async-first Python SDK using httpx. Perfect for building LangChain agents and Python-based AI systems.
+  </Card>
+</CardGroup>
+
+## Core Concepts
+
+### Keypairs
+
+Every agent has an Ed25519 keypair that serves as its identity. The SDK automatically generates and saves a keypair on first run:
+
+- **Location**: `~/.agentdoor/keys.json` (configurable)
+- **Format**: JSON with base64-encoded public/secret keys
+- **Permissions**: `0600` (owner read/write only)
+
+You can also generate ephemeral keypairs for temporary agents by enabling ephemeral mode.
+
+### Credentials
+
+After registration, the SDK caches your credentials locally:
+
+- **Location**: `~/.agentdoor/credentials.json` (configurable)
+- **Contents**: API keys, tokens, scopes, and expiration times
+- **Per-service**: Each service gets its own credential entry keyed by base URL
+
+Cached credentials let your agent skip re-registration on subsequent connections.
+
+### Sessions
+
+A `Session` object represents an authenticated connection to a single service. Sessions provide:
+
+- Convenient HTTP methods: `get()`, `post()`, `put()`, `delete()`, `patch()`
+- Automatic authorization headers
+- Token refresh on expiration
+- x402 payment header injection
+
+Sessions are created by `agent.connect()` and can be reused for multiple requests.
+
+### Scopes
+
+Scopes define what your agent is allowed to do. Services advertise available scopes in their discovery document. During registration, you can request specific scopes or request all available scopes.
+
+Example scopes:
+- `weather:read` — Read current weather data
+- `weather:forecast` — Access forecast data
+- `analytics:write` — Submit analytics events
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/agent/typescript-sdk">
+    Installation, API reference, and advanced usage
+  </Card>
+  <Card title="Python SDK" icon="python" href="/agent/python-sdk">
+    Installation, API reference, and async patterns
+  </Card>
+  <Card title="Examples" icon="code" href="/agent/examples">
+    Complete agent implementations including LangChain integration
+  </Card>
+  <Card title="Service Provider Docs" icon="server" href="/essentials/introduction">
+    Learn how to make your API AgentDoor-compatible
+  </Card>
+</CardGroup>

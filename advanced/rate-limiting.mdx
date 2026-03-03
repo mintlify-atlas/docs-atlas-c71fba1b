@@ -1,0 +1,493 @@
+---
+title: Rate Limiting & Protection
+description: Rate limiting, reputation scoring, and spending caps
+---
+
+## Overview
+
+AgentDoor provides three layers of protection:
+
+1. **Rate Limiting** - Token bucket algorithm for request throttling
+2. **Reputation System** - Behavioral scoring and access gates
+3. **Spending Caps** - Per-agent budget limits
+
+## Rate Limiting
+
+### Token Bucket Algorithm
+
+AgentDoor uses a token bucket rate limiter with continuous refill:
+
+```typescript
+import { RateLimiter } from "@agentdoor/core/rate-limiter";
+
+const limiter = new RateLimiter(
+  { requests: 1000, window: "1h" },  // default config
+  60_000  // cleanup interval (ms)
+);
+
+// Check if request is allowed
+const result = limiter.check("agent_123");
+
+if (!result.allowed) {
+  // Return 429 Too Many Requests
+  return res.status(429).json({
+    error: "Rate limit exceeded",
+    retryAfter: result.retryAfter,
+    limit: result.limit,
+    resetAt: result.resetAt
+  });
+}
+```
+
+### Rate Limit Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [...],
+  
+  // Global default rate limit
+  rateLimit: {
+    requests: 1000,
+    window: "1h"    // Supports: s (seconds), m (minutes), h (hours), d (days)
+  },
+
+  // Registration rate limit (prevents abuse)
+  registrationRateLimit: {
+    requests: 10,
+    window: "1h"
+  }
+};
+```
+
+### Per-Scope Rate Limits
+
+```typescript
+scopes: [
+  {
+    id: "data.read",
+    description: "Read access",
+    rateLimit: "10000/hour"  // Higher limit for reads
+  },
+  {
+    id: "data.write",
+    description: "Write access",
+    rateLimit: "100/hour"    // Lower limit for writes
+  }
+]
+```
+
+### Per-Agent Rate Limits
+
+Override rate limits for specific agents:
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+
+const door = createAgentDoor(config);
+
+// Update agent's rate limit
+await door.store.updateAgent("ag_premium_123", {
+  rateLimit: {
+    requests: 10000,
+    window: "1h"
+  }
+});
+```
+
+### Window Formats
+
+```typescript
+"100s"    // 100 seconds
+"30m"     // 30 minutes
+"1h"      // 1 hour
+"24h"     // 24 hours
+"1d"      // 1 day
+"7d"      // 7 days
+```
+
+### Rate Limit Response
+
+```typescript
+interface RateLimitResult {
+  allowed: boolean;      // Whether request is allowed
+  remaining: number;     // Remaining tokens
+  limit: number;         // Total limit
+  resetAt: number;       // Timestamp when limit resets
+  retryAfter?: number;   // Milliseconds to wait (if not allowed)
+}
+```
+
+### Advanced Usage
+
+#### Consume Multiple Tokens
+
+```typescript
+// Weighted requests (e.g., batch operations)
+const result = limiter.consume("agent_123", 10);  // Consume 10 tokens
+```
+
+#### Peek Without Consuming
+
+```typescript
+// Check rate limit status without consuming tokens
+const status = limiter.peek("agent_123");
+console.log(`Agent has ${status.remaining} requests remaining`);
+```
+
+#### Reset Rate Limit
+
+```typescript
+// Reset a specific agent's rate limit
+limiter.reset("agent_123");
+
+// Reset all rate limits
+limiter.resetAll();
+```
+
+## Reputation System
+
+Track agent behavior and gate access based on reputation scores.
+
+### Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [...],
+  
+  reputation: {
+    enabled: true,
+    initialScore: 50,        // Starting score (0-100)
+    minScore: 0,
+    maxScore: 100,
+    
+    // Event weights (adjust scores)
+    weights: {
+      payment_success: 2,
+      payment_failure: -5,
+      rate_limit_hit: -1,
+      request_success: 0.1,
+      request_error: -0.5,
+      flagged: -10,
+      unflagged: 5
+    },
+    
+    // Reputation gates
+    gates: [
+      {
+        minReputation: 70,
+        scopes: ["data.write", "data.delete"],
+        action: "block"  // Block access if reputation < 70
+      },
+      {
+        minReputation: 30,
+        action: "warn"   // Add warning header if reputation < 30
+      }
+    ],
+    
+    // Automatic actions
+    flagThreshold: 20,      // Auto-flag agents with score < 20
+    suspendThreshold: 10    // Auto-suspend agents with score < 10
+  }
+};
+```
+
+### Event Types
+
+```typescript
+type ReputationEventType =
+  | "payment_success"      // x402 payment succeeded
+  | "payment_failure"      // x402 payment failed
+  | "rate_limit_hit"       // Agent hit rate limit
+  | "request_success"      // Successful API request
+  | "request_error"        // Request returned error
+  | "flagged"              // Agent manually flagged
+  | "unflagged";           // Flag removed
+```
+
+### Usage
+
+```typescript
+import { ReputationManager } from "@agentdoor/core/reputation";
+
+const reputation = new ReputationManager(config.reputation);
+
+// Calculate new score after event
+const currentScore = 50;
+const newScore = reputation.calculateScore(currentScore, "payment_success");
+// newScore = 52
+
+// Check if agent passes reputation gate
+const gateResult = reputation.checkGate(agentScore, "data.write");
+if (!gateResult.allowed && gateResult.action === "block") {
+  return res.status(403).json({
+    error: "Insufficient reputation",
+    currentScore: gateResult.currentScore,
+    requiredScore: gateResult.requiredScore
+  });
+}
+
+// Check if agent should be flagged/suspended
+if (reputation.shouldSuspend(agentScore)) {
+  await door.store.updateAgent(agentId, { status: "suspended" });
+} else if (reputation.shouldFlag(agentScore)) {
+  await door.store.updateAgent(agentId, { status: "flagged" });
+}
+```
+
+### Reputation Gates
+
+#### Block Access
+
+```typescript
+gates: [
+  {
+    minReputation: 70,
+    scopes: ["admin.access"],
+    action: "block"  // Returns 403 Forbidden
+  }
+]
+```
+
+#### Warning Mode
+
+```typescript
+gates: [
+  {
+    minReputation: 40,
+    action: "warn"  // Adds X-AgentDoor-Reputation-Warning header
+  }
+]
+```
+
+### Bulk Score Updates
+
+```typescript
+// Apply multiple events at once
+const events: ReputationEventType[] = [
+  "request_success",
+  "request_success",
+  "payment_success"
+];
+
+const newScore = reputation.calculateBulkScore(currentScore, events);
+```
+
+### Custom Weights
+
+```typescript
+reputation: {
+  weights: {
+    payment_success: 5,      // Reward successful payments more
+    payment_failure: -10,    // Penalize failures heavily
+    rate_limit_hit: -2,      // Penalize rate limit hits more
+    request_success: 0.5,    // Bigger bonus for requests
+    request_error: -1,       // Bigger penalty for errors
+    flagged: -20,            // Severe penalty for flagging
+    unflagged: 10            // Large bonus for unflagging
+  }
+}
+```
+
+## Spending Caps
+
+Enforce daily and monthly spending limits per agent.
+
+### Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [...],
+  
+  spendingCaps: {
+    enabled: true,
+    
+    // Default caps for all agents
+    defaultCaps: [
+      {
+        amount: 10,           // Max 10 USDC per day
+        currency: "USDC",
+        period: "daily",
+        type: "hard"          // Block requests when exceeded
+      },
+      {
+        amount: 100,          // Max 100 USDC per month
+        currency: "USDC",
+        period: "monthly",
+        type: "soft"          // Warn but allow requests
+      }
+    ],
+    
+    warningThreshold: 0.8   // Warn at 80% of cap
+  }
+};
+```
+
+### Cap Types
+
+- **Hard Cap** (`type: "hard"`): Blocks requests when exceeded (returns 402 Payment Required)
+- **Soft Cap** (`type: "soft"`): Sends warning header but allows requests
+
+### Usage
+
+```typescript
+import { SpendingTracker } from "@agentdoor/core/spending";
+
+const tracker = new SpendingTracker(config.spendingCaps);
+
+// Check if agent can spend
+const amount = 0.01;  // USDC
+const checkResult = tracker.checkCap("ag_123", amount, "USDC");
+
+if (!checkResult.allowed) {
+  return res.status(402).json({
+    error: "Spending cap exceeded",
+    currentSpend: checkResult.currentSpend,
+    capAmount: checkResult.capAmount,
+    period: checkResult.period,
+    remaining: checkResult.remaining
+  });
+}
+
+if (checkResult.warning) {
+  res.setHeader("X-AgentDoor-Spending-Warning", 
+    `${Math.round(checkResult.usagePercent * 100)}% of ${checkResult.period} cap used`);
+}
+
+// Record the spending
+tracker.recordSpend("ag_123", amount, "USDC");
+```
+
+### Check Result
+
+```typescript
+interface SpendingCheckResult {
+  allowed: boolean;         // Whether request is allowed
+  warning: boolean;         // Whether warning threshold reached
+  currentSpend: number;     // Current spending in period
+  capAmount: number;        // Cap amount
+  period: "daily" | "monthly";
+  capType: "hard" | "soft";
+  remaining: number;        // Remaining budget
+  usagePercent: number;     // Usage percentage (0-1)
+}
+```
+
+### Per-Agent Custom Caps
+
+```typescript
+// Set custom caps for premium agent
+tracker.setAgentCaps("ag_premium_123", [
+  { amount: 100, currency: "USDC", period: "daily", type: "hard" },
+  { amount: 1000, currency: "USDC", period: "monthly", type: "soft" }
+]);
+
+// Remove custom caps (reverts to defaults)
+tracker.removeAgentCaps("ag_premium_123");
+```
+
+### Get Spending History
+
+```typescript
+// Get current spending for an agent
+const spending = tracker.getSpending("ag_123");
+
+for (const record of spending) {
+  console.log(`${record.period}: ${record.amount} ${record.currency}`);
+}
+```
+
+### Reset Spending
+
+```typescript
+// Reset all spending for an agent
+tracker.resetSpending("ag_123");
+
+// Reset only daily spending
+tracker.resetSpending("ag_123", "daily");
+```
+
+### Cleanup
+
+```typescript
+// Remove expired spending records
+setInterval(() => {
+  const cleaned = tracker.cleanup();
+  console.log(`Cleaned ${cleaned} expired spending records`);
+}, 60 * 60 * 1000);  // Every hour
+```
+
+## Combined Protection Strategy
+
+Use all three layers together for comprehensive protection:
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [...],
+  
+  // Layer 1: Rate limiting
+  rateLimit: {
+    requests: 1000,
+    window: "1h"
+  },
+  
+  // Layer 2: Reputation gating
+  reputation: {
+    enabled: true,
+    initialScore: 50,
+    gates: [
+      { minReputation: 70, scopes: ["data.write"], action: "block" },
+      { minReputation: 30, action: "warn" }
+    ],
+    flagThreshold: 20,
+    suspendThreshold: 10
+  },
+  
+  // Layer 3: Spending caps
+  spendingCaps: {
+    enabled: true,
+    defaultCaps: [
+      { amount: 10, currency: "USDC", period: "daily", type: "hard" },
+      { amount: 100, currency: "USDC", period: "monthly", type: "soft" }
+    ],
+    warningThreshold: 0.8
+  }
+};
+```
+
+## Monitoring
+
+### Rate Limit Metrics
+
+```typescript
+const limiter = new RateLimiter();
+
+console.log(`Active buckets: ${limiter.size}`);
+```
+
+### Reputation Metrics
+
+```typescript
+const reputation = new ReputationManager(config.reputation);
+
+const thresholds = reputation.getThresholds();
+console.log(`Flag threshold: ${thresholds.flag}`);
+console.log(`Suspend threshold: ${thresholds.suspend}`);
+```
+
+### Spending Metrics
+
+```typescript
+const tracker = new SpendingTracker();
+
+console.log(`Active spending records: ${tracker.recordCount}`);
+```
+
+## Best Practices
+
+1. **Start conservative**: Begin with tight limits and relax based on agent behavior
+2. **Monitor metrics**: Track rate limit hits, reputation changes, and spending patterns
+3. **Use graduated limits**: Different limits for different scopes
+4. **Implement appeals**: Allow agents to contest suspensions
+5. **Log events**: Record all reputation events for audit trails
+6. **Cleanup regularly**: Run periodic cleanup jobs for expired records
+7. **Test limits**: Verify limits work as expected before production

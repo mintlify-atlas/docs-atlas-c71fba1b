@@ -1,0 +1,622 @@
+---
+title: Python SDK
+description: Reference for the agentdoor Python package
+---
+
+The Python SDK is the official client library for building Python-based agents that connect to AgentDoor-enabled services. It uses async/await and httpx for modern, performant HTTP requests.
+
+## Installation
+
+```bash
+pip install agentdoor
+```
+
+## Quick Start
+
+```python
+from agentdoor import Agent, AgentConfig
+
+agent = Agent(config=AgentConfig(agent_name="my-agent"))
+
+# Connect and register
+await agent.connect("https://api.example.com")
+await agent.register(scopes=["read", "write"])
+
+# Make authenticated requests
+response = await agent.request("GET", "/weather/forecast")
+print(response.json())
+```
+
+## Agent Class
+
+The main entry point for the SDK. Manages discovery, registration, authentication, and requests.
+
+### AgentConfig
+
+Configuration dataclass for customizing agent behavior.
+
+```python
+from dataclasses import dataclass
+from agentdoor import CredentialStore, InMemoryCredentialStore
+
+@dataclass
+class AgentConfig:
+    """Configuration for an Agent instance.
+    
+    Attributes:
+        agent_name: Human-readable name for this agent.
+        credential_store: Where to persist credentials. Defaults to
+            an in-memory store.
+        http_timeout: Timeout in seconds for HTTP requests.
+    """
+    agent_name: str = "agentdoor-python-sdk"
+    credential_store: CredentialStore = InMemoryCredentialStore()
+    http_timeout: float = 30.0
+```
+
+### Example: Basic Configuration
+
+```python
+from agentdoor import Agent, AgentConfig
+
+config = AgentConfig(
+    agent_name="weather-bot",
+    http_timeout=60.0
+)
+
+agent = Agent(config=config)
+```
+
+### Example: Custom Credential Store
+
+```python
+from agentdoor import Agent, AgentConfig, FileCredentialStore
+
+config = AgentConfig(
+    agent_name="persistent-agent",
+    credential_store=FileCredentialStore("./credentials.json")
+)
+
+agent = Agent(config=config)
+```
+
+## Methods
+
+### `connect(base_url: str) -> DiscoveryDocument`
+
+Discover an AgentDoor-enabled service by fetching its discovery document from `/.well-known/agentdoor.json`.
+
+**Parameters:**
+- `base_url` — Root URL of the service (e.g. `https://api.example.com`)
+
+**Returns:** The parsed `DiscoveryDocument`
+
+**Example:**
+
+```python
+await agent.connect("https://api.example.com")
+
+if agent.is_connected:
+    print(f"Connected to {agent.discovery.service_name}")
+    print(f"Available scopes: {agent.discovery.scopes_available}")
+```
+
+**Flow:**
+
+<Steps>
+  <Step title="Normalize URL">
+    Strips trailing slashes and ensures the URL is valid
+  </Step>
+  <Step title="Create HTTP Client">
+    Initializes an httpx.AsyncClient with the configured timeout
+  </Step>
+  <Step title="Check Cache">
+    Looks for cached credentials in the credential store
+  </Step>
+  <Step title="Fetch Discovery">
+    Requests `/.well-known/agentdoor.json` from the service
+  </Step>
+  <Step title="Parse & Validate">
+    Validates the discovery document schema and stores it internally
+  </Step>
+</Steps>
+
+### `register(scopes: list[str] | None = None) -> Credential`
+
+Register the agent with the connected service using the two-step challenge-response flow.
+
+**Parameters:**
+- `scopes` — List of permission scopes to request. If `None`, requests all available scopes.
+
+**Returns:** A `Credential` object containing the API key, agent ID, and granted scopes
+
+**Example:**
+
+```python
+credential = await agent.register(scopes=["weather:read", "weather:forecast"])
+
+print(f"Agent ID: {credential.agent_id}")
+print(f"API Key: {credential.api_key}")
+print(f"Scopes: {credential.scopes}")
+```
+
+**Flow:**
+
+<Steps>
+  <Step title="Check Cache">
+    Returns cached credential if one exists with a valid API key
+  </Step>
+  <Step title="Generate Keypair">
+    Creates a fresh Ed25519 keypair for this agent
+  </Step>
+  <Step title="POST /register">
+    Sends the public key and requested scopes to the registration endpoint
+  </Step>
+  <Step title="Sign Challenge">
+    Signs the returned challenge nonce with the agent's secret key
+  </Step>
+  <Step title="POST /verify">
+    Sends the signature to the verification endpoint
+  </Step>
+  <Step title="Store Credential">
+    Caches the API key, agent ID, and scopes in the credential store
+  </Step>
+</Steps>
+
+### `authenticate() -> str`
+
+Obtain a short-lived bearer token for authenticated requests. The SDK automatically caches tokens and only requests new ones when the cached token expires.
+
+**Returns:** A JWT bearer token string
+
+**Example:**
+
+```python
+token = await agent.authenticate()
+print(f"Token: {token}")
+```
+
+**Flow:**
+
+<Steps>
+  <Step title="Check Token">
+    Returns cached token if it's still valid (hasn't expired)
+  </Step>
+  <Step title="Sign Timestamp">
+    Signs the current Unix timestamp with the agent's secret key
+  </Step>
+  <Step title="POST /auth">
+    Exchanges the signed timestamp for a fresh JWT token
+  </Step>
+  <Step title="Cache Token">
+    Stores the token and expiration time in the credential
+  </Step>
+</Steps>
+
+### `request(method: str, path: str, **kwargs) -> httpx.Response`
+
+Make an authenticated HTTP request to the connected service. Automatically obtains or refreshes the bearer token before sending the request.
+
+**Parameters:**
+- `method` — HTTP method (GET, POST, PUT, DELETE, etc.)
+- `path` — Path relative to the service base URL
+- `**kwargs` — Additional keyword arguments forwarded to `httpx.AsyncClient.request` (e.g. `json=`, `params=`, `headers=`)
+
+**Returns:** An `httpx.Response` object
+
+**Example:**
+
+```python
+# GET request with query parameters
+response = await agent.request(
+    "GET",
+    "/weather/forecast",
+    params={"city": "san-francisco", "days": "5"}
+)
+print(response.json())
+
+# POST request with JSON body
+response = await agent.request(
+    "POST",
+    "/analytics/events",
+    json={
+        "event": "page_view",
+        "timestamp": 1234567890
+    }
+)
+```
+
+**Auto-retry on 401:**
+
+If the request returns a 401 Unauthorized, the SDK automatically refreshes the token and retries the request once.
+
+```python
+# First request: token is expired, returns 401
+# SDK refreshes token automatically and retries
+# Second attempt: succeeds with fresh token
+response = await agent.request("GET", "/data")
+```
+
+### `close()`
+
+Close the underlying HTTP client. Always call this when you're done with the agent to clean up resources.
+
+**Example:**
+
+```python
+await agent.close()
+```
+
+**Context Manager Pattern:**
+
+```python
+async with httpx.AsyncClient() as client:
+    agent = Agent()
+    await agent.connect("https://api.example.com")
+    await agent.register()
+    
+    response = await agent.request("GET", "/data")
+    print(response.json())
+    
+    await agent.close()
+```
+
+## Properties
+
+### `base_url: str | None`
+
+The base URL of the connected service, or `None` if not connected.
+
+```python
+if agent.base_url:
+    print(f"Connected to {agent.base_url}")
+```
+
+### `discovery: DiscoveryDocument | None`
+
+The discovery document, available after calling `connect()`.
+
+```python
+if agent.discovery:
+    print(f"Service: {agent.discovery.service_name}")
+    print(f"Version: {agent.discovery.agentdoor_version}")
+```
+
+### `credential: Credential | None`
+
+The current credential, available after calling `register()`.
+
+```python
+if agent.credential:
+    print(f"Agent ID: {agent.credential.agent_id}")
+    print(f"Scopes: {agent.credential.scopes}")
+```
+
+### `is_connected: bool`
+
+Whether `connect()` has been called successfully.
+
+```python
+if agent.is_connected:
+    print("Agent is connected")
+```
+
+### `is_registered: bool`
+
+Whether `register()` has completed successfully.
+
+```python
+if agent.is_registered:
+    print("Agent is registered")
+```
+
+## Data Classes
+
+### DiscoveryDocument
+
+Represents the parsed `/.well-known/agentdoor.json` document.
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class DiscoveryDocument:
+    agentdoor_version: str
+    service_name: str
+    service_description: str | None
+    registration_endpoint: str
+    verification_endpoint: str
+    auth_endpoint: str
+    token_ttl_seconds: int
+    scopes_available: list[dict]
+```
+
+**Example:**
+
+```python
+print(f"Service: {agent.discovery.service_name}")
+print(f"Scopes:")
+for scope in agent.discovery.scopes_available:
+    print(f"  - {scope['id']}: {scope['description']}")
+```
+
+### Credential
+
+Represents cached credentials for a service.
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Credential:
+    service_url: str
+    agent_id: str
+    public_key: str
+    secret_key: str
+    api_key: str
+    scopes: list[str]
+    token: str | None = None
+    token_expires_at: float | None = None
+```
+
+**Methods:**
+
+```python
+def is_token_valid() -> bool:
+    """Check if the cached token is still valid (not expired)."""
+```
+
+## Credential Stores
+
+Credential stores manage persistence of agent credentials. The SDK provides two built-in implementations.
+
+### InMemoryCredentialStore
+
+Stores credentials in memory. Credentials are lost when the process exits.
+
+```python
+from agentdoor import Agent, AgentConfig, InMemoryCredentialStore
+
+config = AgentConfig(
+    credential_store=InMemoryCredentialStore()
+)
+agent = Agent(config=config)
+```
+
+**Use cases:**
+- Testing and development
+- Ephemeral agents that don't need persistent identity
+- Serverless functions with short lifecycles
+
+### FileCredentialStore
+
+Stores credentials in a JSON file on disk.
+
+```python
+from agentdoor import Agent, AgentConfig, FileCredentialStore
+
+config = AgentConfig(
+    credential_store=FileCredentialStore("./my-credentials.json")
+)
+agent = Agent(config=config)
+```
+
+**Use cases:**
+- Long-running agents that need persistent identity
+- Development workflows where you want to reuse credentials across runs
+- Multi-service agents that connect to many APIs
+
+### Custom Credential Store
+
+Implement the `CredentialStore` protocol to create your own storage backend:
+
+```python
+from agentdoor import Credential
+
+class RedisCredentialStore:
+    def __init__(self, redis_client):
+        self.redis = redis_client
+    
+    def get(self, service_url: str) -> Credential | None:
+        data = self.redis.get(f"cred:{service_url}")
+        if data:
+            return Credential(**json.loads(data))
+        return None
+    
+    def save(self, credential: Credential) -> None:
+        key = f"cred:{credential.service_url}"
+        self.redis.set(key, json.dumps(credential.__dict__))
+```
+
+## Cryptography Functions
+
+Low-level functions for Ed25519 keypair management and signing.
+
+### `generate_keypair() -> tuple[str, str]`
+
+Generate a fresh Ed25519 keypair.
+
+**Returns:** A tuple of `(public_key, secret_key)` in base64 format
+
+```python
+from agentdoor.crypto import generate_keypair
+
+public_key, secret_key = generate_keypair()
+print(f"Public key: {public_key}")
+```
+
+### `sign_message(message: str, secret_key: str) -> str`
+
+Sign a message with an Ed25519 secret key.
+
+**Returns:** A base64-encoded signature
+
+```python
+from agentdoor.crypto import sign_message, generate_keypair
+
+public_key, secret_key = generate_keypair()
+signature = sign_message("hello world", secret_key)
+print(f"Signature: {signature}")
+```
+
+### `verify_signature(message: str, signature: str, public_key: str) -> bool`
+
+Verify an Ed25519 signature.
+
+**Returns:** `True` if the signature is valid, `False` otherwise
+
+```python
+from agentdoor.crypto import verify_signature
+
+is_valid = verify_signature("hello world", signature, public_key)
+print(f"Valid: {is_valid}")
+```
+
+## Discovery Functions
+
+### `discover(base_url: str, client: httpx.AsyncClient | None = None) -> DiscoveryDocument`
+
+Fetch and parse the AgentDoor discovery document from a service.
+
+```python
+from agentdoor.discovery import discover
+import httpx
+
+async with httpx.AsyncClient() as client:
+    doc = await discover("https://api.example.com", client=client)
+    print(f"Service: {doc.service_name}")
+    print(f"Scopes: {doc.scopes_available}")
+```
+
+## Error Handling
+
+The Python SDK raises standard Python exceptions and httpx errors.
+
+### RuntimeError
+
+Raised when methods are called in the wrong order:
+
+```python
+try:
+    await agent.register()  # Called before connect()
+except RuntimeError as e:
+    print(f"Error: {e}")
+    # Output: "Must call connect() before register()"
+```
+
+### httpx.HTTPStatusError
+
+Raised when the service returns an error status code:
+
+```python
+import httpx
+
+try:
+    await agent.register()
+except httpx.HTTPStatusError as e:
+    print(f"HTTP {e.response.status_code}: {e.response.text}")
+```
+
+## Complete Example
+
+```python
+import asyncio
+from agentdoor import Agent, AgentConfig, FileCredentialStore
+
+async def main():
+    # Configure the agent with persistent credentials
+    config = AgentConfig(
+        agent_name="weather-research-agent",
+        credential_store=FileCredentialStore("./credentials.json"),
+        http_timeout=60.0
+    )
+    
+    agent = Agent(config=config)
+    
+    try:
+        # Connect to the service
+        await agent.connect("https://weather-api.example.com")
+        print(f"Connected to {agent.discovery.service_name}")
+        
+        # Register with requested scopes
+        credential = await agent.register(
+            scopes=["weather:read", "weather:forecast"]
+        )
+        print(f"Registered as {credential.agent_id}")
+        print(f"Granted scopes: {credential.scopes}")
+        
+        # Make authenticated requests
+        response = await agent.request(
+            "GET",
+            "/weather/forecast",
+            params={"city": "san-francisco", "days": "5"}
+        )
+        
+        forecast = response.json()
+        print(f"\n5-day forecast for San Francisco:")
+        for day in forecast["days"]:
+            print(f"  {day['date']}: {day['temp_high']}°F / {day['temp_low']}°F")
+        
+    finally:
+        # Clean up the HTTP client
+        await agent.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## LangChain Integration
+
+The Python SDK works seamlessly with LangChain for building agentic AI systems:
+
+```python
+from agentdoor import Agent, AgentConfig
+from langchain.tools import Tool
+
+# Initialize AgentDoor agent
+agent = Agent(config=AgentConfig(agent_name="langchain-agent"))
+await agent.connect("https://weather-api.com")
+await agent.register()
+
+# Wrap as a LangChain tool
+async def get_weather(city: str) -> str:
+    response = await agent.request(
+        "GET",
+        "/weather/forecast",
+        params={"city": city}
+    )
+    return response.text
+
+weather_tool = Tool(
+    name="get_weather",
+    func=get_weather,
+    description="Get the current weather for a city"
+)
+
+# Use in a LangChain agent
+from langchain.agents import initialize_agent
+from langchain.llms import OpenAI
+
+llm = OpenAI(temperature=0)
+agent_executor = initialize_agent(
+    tools=[weather_tool],
+    llm=llm,
+    agent="zero-shot-react-description"
+)
+
+result = agent_executor.run(
+    "What's the weather like in San Francisco?"
+)
+print(result)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/agent/typescript-sdk">
+    Build agents in Node.js with TypeScript support
+  </Card>
+  <Card title="Examples" icon="code" href="/agent/examples">
+    See complete agent implementations and integration patterns
+  </Card>
+</CardGroup>

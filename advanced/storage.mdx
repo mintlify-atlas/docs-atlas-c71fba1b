@@ -1,0 +1,417 @@
+---
+title: Storage Backends
+description: Storage adapter configuration and implementation guide
+---
+
+## Overview
+
+AgentDoor uses a pluggable storage interface (`AgentStore`) to persist agent records, challenges, and metadata. Multiple backends are provided out of the box.
+
+## Available Backends
+
+### Memory Store (Default)
+
+In-memory storage using JavaScript Maps. Suitable for development and testing.
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+
+const door = createAgentDoor({
+  scopes: [...],
+  storage: { driver: "memory" }
+});
+```
+
+**Pros:**
+- Zero setup required
+- Fast performance
+- No external dependencies
+
+**Cons:**
+- Data lost on process restart
+- Not suitable for production
+- Cannot scale horizontally
+
+**Use cases:**
+- Development environments
+- Testing
+- Serverless functions with ephemeral state
+
+### SQLite Store
+
+File-based SQL database using `better-sqlite3`. Suitable for single-process deployments.
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+import { SQLiteStore } from "@agentdoor/core/advanced/storage";
+
+const door = createAgentDoor({
+  scopes: [...],
+  storage: { 
+    driver: "sqlite",
+    url: "./data/agentdoor.db"  // or ":memory:"
+  }
+});
+```
+
+**Installation:**
+```bash
+npm install better-sqlite3
+npm install -D @types/better-sqlite3
+```
+
+**Pros:**
+- Persistent storage
+- No external database required
+- Excellent performance
+- Automatic schema initialization
+- WAL mode enabled by default
+
+**Cons:**
+- Single-process only
+- Not suitable for distributed systems
+
+**Use cases:**
+- Edge deployments
+- Local-first applications
+- Single-server production apps
+
+**Schema:**
+
+```sql
+CREATE TABLE agents (
+  id TEXT PRIMARY KEY,
+  public_key TEXT NOT NULL UNIQUE,
+  x402_wallet TEXT,
+  scopes_granted TEXT NOT NULL DEFAULT '[]',
+  api_key_hash TEXT NOT NULL UNIQUE,
+  rate_limit_requests INTEGER NOT NULL DEFAULT 1000,
+  rate_limit_window TEXT NOT NULL DEFAULT '1h',
+  reputation INTEGER NOT NULL DEFAULT 50,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  last_auth_at TEXT NOT NULL,
+  total_requests INTEGER NOT NULL DEFAULT 0,
+  total_x402_paid REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE challenges (
+  agent_id TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  message TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+```
+
+### Postgres Store
+
+PostgreSQL adapter using the `pg` library. Suitable for production deployments.
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+import { PostgresStore } from "@agentdoor/core/storage/postgres";
+
+const store = new PostgresStore(process.env.DATABASE_URL!);
+await store.initialize(); // Creates tables if needed
+
+const door = createAgentDoor({
+  scopes: [...],
+  // Pass store instance directly
+}, store);
+```
+
+**Installation:**
+```bash
+npm install pg
+npm install -D @types/pg
+```
+
+**Connection URL format:**
+```
+postgresql://user:password@host:port/database
+```
+
+**Pros:**
+- Multi-process support
+- Horizontal scalability
+- ACID guarantees
+- Rich querying capabilities
+- Compatible with managed services (Neon, Supabase, RDS)
+
+**Cons:**
+- Requires external database
+- Higher latency than SQLite
+- More complex setup
+
+**Use cases:**
+- Production deployments
+- Multi-instance applications
+- High-availability setups
+- Serverless with connection pooling
+
+**Schema:**
+
+```sql
+CREATE TABLE agents (
+  id TEXT PRIMARY KEY,
+  public_key TEXT NOT NULL UNIQUE,
+  x402_wallet TEXT,
+  scopes_granted JSONB NOT NULL DEFAULT '[]',
+  api_key_hash TEXT NOT NULL UNIQUE,
+  rate_limit_requests INTEGER NOT NULL DEFAULT 1000,
+  rate_limit_window TEXT NOT NULL DEFAULT '1h',
+  reputation INTEGER NOT NULL DEFAULT 50,
+  metadata JSONB NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_auth_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  total_requests INTEGER NOT NULL DEFAULT 0,
+  total_x402_paid NUMERIC NOT NULL DEFAULT 0
+);
+
+CREATE TABLE challenges (
+  agent_id TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  message TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+**Connection Pooling:**
+
+```typescript
+import { Pool } from "pg";
+import { PostgresStore } from "@agentdoor/core/storage/postgres";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+
+const store = new PostgresStore(pool);
+await store.initialize();
+```
+
+**Serverless (Neon):**
+
+```typescript
+import { neon } from "@neondatabase/serverless";
+import { PostgresStore } from "@agentdoor/core/storage/postgres";
+
+const sql = neon(process.env.DATABASE_URL!);
+const store = new PostgresStore(sql as any);
+```
+
+## Storage Interface
+
+All storage backends implement the `AgentStore` interface:
+
+```typescript
+interface AgentStore {
+  // Agent CRUD
+  createAgent(input: CreateAgentInput): Promise<Agent>;
+  getAgent(id: string): Promise<Agent | null>;
+  getAgentByApiKeyHash(hash: string): Promise<Agent | null>;
+  getAgentByPublicKey(publicKey: string): Promise<Agent | null>;
+  updateAgent(id: string, input: UpdateAgentInput): Promise<Agent>;
+  deleteAgent(id: string): Promise<boolean>;
+
+  // Challenge management
+  createChallenge(challenge: ChallengeData): Promise<void>;
+  getChallenge(agentId: string): Promise<ChallengeData | null>;
+  deleteChallenge(agentId: string): Promise<void>;
+  cleanExpiredChallenges(): Promise<number>;
+
+  // Lifecycle
+  close?(): Promise<void>;
+}
+```
+
+## Agent Data Structure
+
+```typescript
+interface Agent {
+  id: string;                   // Unique agent ID (e.g., "ag_xxx")
+  publicKey: string;            // Base64-encoded Ed25519 public key
+  x402Wallet?: string;          // Optional x402 wallet address
+  scopesGranted: string[];      // Granted scope IDs
+  apiKeyHash: string;           // SHA-256 hash of API key (hex)
+  rateLimit: RateLimitConfig;   // Agent-specific rate limit
+  reputation: number;           // Reputation score (0-100)
+  metadata: Record<string, string>;  // Custom metadata
+  status: AgentStatus;          // "active" | "suspended" | "flagged"
+  createdAt: Date;              // Registration timestamp
+  lastAuthAt: Date;             // Last authentication timestamp
+  totalRequests: number;        // Total requests made
+  totalX402Paid: number;        // Total x402 payments (in currency units)
+}
+```
+
+## Challenge Data Structure
+
+```typescript
+interface ChallengeData {
+  agentId: string;    // Agent ID attempting registration
+  nonce: string;      // Random challenge nonce
+  message: string;    // Message to be signed
+  expiresAt: Date;    // Expiry timestamp
+  createdAt: Date;    // Creation timestamp
+}
+```
+
+## Custom Storage Backend
+
+You can implement custom storage backends by implementing the `AgentStore` interface:
+
+```typescript
+import type { AgentStore, CreateAgentInput, UpdateAgentInput } from "@agentdoor/core/storage";
+import type { Agent, ChallengeData } from "@agentdoor/core";
+
+export class CustomStore implements AgentStore {
+  async createAgent(input: CreateAgentInput): Promise<Agent> {
+    // Implement agent creation logic
+  }
+
+  async getAgent(id: string): Promise<Agent | null> {
+    // Implement agent retrieval
+  }
+
+  // ... implement other methods
+}
+```
+
+### Example: Redis Store
+
+```typescript
+import { Redis } from "ioredis";
+import type { AgentStore } from "@agentdoor/core/storage";
+
+export class RedisStore implements AgentStore {
+  private redis: Redis;
+
+  constructor(redisUrl: string) {
+    this.redis = new Redis(redisUrl);
+  }
+
+  async createAgent(input: CreateAgentInput): Promise<Agent> {
+    const agent: Agent = {
+      id: input.id,
+      publicKey: input.publicKey,
+      // ... other fields
+    };
+
+    await this.redis.hset(`agent:${agent.id}`, {
+      data: JSON.stringify(agent)
+    });
+
+    // Index by API key hash
+    await this.redis.set(`apikey:${input.apiKeyHash}`, agent.id);
+
+    return agent;
+  }
+
+  async getAgent(id: string): Promise<Agent | null> {
+    const data = await this.redis.hget(`agent:${id}`, "data");
+    return data ? JSON.parse(data) : null;
+  }
+
+  // ... implement other methods
+}
+```
+
+## Cleanup and Maintenance
+
+### Expired Challenges
+
+Periodically clean up expired challenges to prevent storage bloat:
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+
+const door = createAgentDoor(config);
+
+// Run cleanup every hour
+setInterval(async () => {
+  const cleaned = await door.store.cleanExpiredChallenges();
+  console.log(`Cleaned ${cleaned} expired challenges`);
+}, 60 * 60 * 1000);
+```
+
+### Graceful Shutdown
+
+Close database connections on shutdown:
+
+```typescript
+process.on('SIGTERM', async () => {
+  await door.store.close?.();
+  process.exit(0);
+});
+```
+
+## Migration Guide
+
+### From Memory to SQLite
+
+```typescript
+import { MemoryStore } from "@agentdoor/core/storage/memory";
+import { SQLiteStore } from "@agentdoor/core/advanced/storage";
+
+const memoryStore = new MemoryStore();
+const sqliteStore = new SQLiteStore("./agentdoor.db");
+
+// Migrate all agents
+const agents = memoryStore.getAllAgents();
+for (const agent of agents) {
+  await sqliteStore.createAgent(agent);
+}
+```
+
+### From SQLite to Postgres
+
+```typescript
+import { SQLiteStore } from "@agentdoor/core/advanced/storage";
+import { PostgresStore } from "@agentdoor/core/storage/postgres";
+
+const sqlite = new SQLiteStore("./agentdoor.db");
+const postgres = new PostgresStore(process.env.DATABASE_URL!);
+await postgres.initialize();
+
+// Export from SQLite and import to Postgres
+// (Implement pagination for large datasets)
+```
+
+## Performance Tips
+
+1. **Use connection pooling** for Postgres in production
+2. **Enable WAL mode** for SQLite (enabled by default)
+3. **Index frequently queried fields** (public_key, api_key_hash)
+4. **Run cleanup jobs** during off-peak hours
+5. **Monitor database size** and archive old records
+6. **Use read replicas** for high-traffic deployments
+
+## Troubleshooting
+
+### SQLite: Database is locked
+
+```typescript
+// Enable WAL mode (done automatically by AgentDoor)
+db.pragma("journal_mode = WAL");
+```
+
+### Postgres: Connection timeout
+
+```typescript
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  connectionTimeoutMillis: 5000,  // Increase timeout
+});
+```
+
+### Memory: High memory usage
+
+Use SQLite or Postgres for production deployments.

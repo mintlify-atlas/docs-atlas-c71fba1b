@@ -1,0 +1,425 @@
+---
+title: Session Class
+description: Authenticated session for making requests to AgentDoor-enabled services
+---
+
+The `Session` class represents an authenticated connection to an AgentDoor-enabled service. It wraps the native fetch API with convenience methods and handles authentication, token refresh, and x402 payment headers automatically.
+
+## Overview
+
+Sessions are created by the `AgentDoor.connect()` method and should not be instantiated directly. Each session maintains:
+
+- Bearer token authentication (with automatic refresh)
+- API key fallback for long-lived credentials
+- Optional x402 payment header attachment
+- Request timeout management
+- Response parsing and error handling
+
+## Properties
+
+<ResponseField name="baseUrl" type="string">
+  The base URL of the connected service.
+</ResponseField>
+
+<ResponseField name="scopes" type="string[]">
+  Array of scopes granted by the service during registration.
+</ResponseField>
+
+<ResponseField name="agentId" type="string">
+  The agent ID assigned by the service.
+</ResponseField>
+
+<ResponseField name="discovery" type="AgentDoorDiscoveryDocument">
+  The discovery document for this service, containing metadata and endpoint information.
+</ResponseField>
+
+## Request Methods
+
+All request methods return a `SessionResponse<T>` object with the parsed response data.
+
+### get()
+
+Make an authenticated GET request.
+
+```typescript
+const response = await session.get("/weather/forecast", {
+  params: { city: "san-francisco", days: "7" },
+  headers: { "Accept-Language": "en-US" }
+});
+
+console.log("Status:", response.status);
+console.log("Data:", response.data);
+```
+
+<ParamField path="path" type="string" required>
+  The URL path to request (e.g., "/weather/forecast"). Will be joined with the session's base URL.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options including query parameters, headers, and payment settings. The `body` option is not available for GET requests.
+</ParamField>
+
+### post()
+
+Make an authenticated POST request.
+
+```typescript
+const response = await session.post("/weather/alerts", {
+  body: {
+    city: "san-francisco",
+    threshold: "severe"
+  },
+  x402: true // Attach payment header
+});
+```
+
+<ParamField path="path" type="string" required>
+  The URL path to request.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options including body, headers, and payment settings.
+</ParamField>
+
+### put()
+
+Make an authenticated PUT request.
+
+```typescript
+const response = await session.put("/settings/preferences", {
+  body: {
+    notifications: true,
+    theme: "dark"
+  }
+});
+```
+
+<ParamField path="path" type="string" required>
+  The URL path to request.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options including body, headers, and payment settings.
+</ParamField>
+
+### delete()
+
+Make an authenticated DELETE request.
+
+```typescript
+const response = await session.delete("/alerts/123");
+```
+
+<ParamField path="path" type="string" required>
+  The URL path to request.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options. The `body` option is not available for DELETE requests.
+</ParamField>
+
+### patch()
+
+Make an authenticated PATCH request.
+
+```typescript
+const response = await session.patch("/settings/preferences", {
+  body: {
+    theme: "light"
+  }
+});
+```
+
+<ParamField path="path" type="string" required>
+  The URL path to request.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options including body, headers, and payment settings.
+</ParamField>
+
+### request()
+
+Low-level authenticated request method. All convenience methods delegate to this.
+
+```typescript
+const response = await session.request("GET", "/custom/endpoint", {
+  params: { filter: "active" },
+  timeoutMs: 60000
+});
+```
+
+<ParamField path="method" type="string" required>
+  HTTP method (GET, POST, PUT, DELETE, PATCH, etc.).
+</ParamField>
+
+<ParamField path="urlPath" type="string" required>
+  The URL path to request.
+</ParamField>
+
+<ParamField path="options" type="RequestOptions" optional>
+  Request options.
+</ParamField>
+
+## Request Options
+
+All request methods accept an options object with the following fields:
+
+<ParamField path="params" type="Record<string, string>" optional>
+  Query parameters to append to the URL. Automatically URL-encoded.
+</ParamField>
+
+<ParamField path="headers" type="Record<string, string>" optional>
+  Additional HTTP headers to include in the request. These are merged with default headers.
+</ParamField>
+
+<ParamField path="body" type="unknown" optional>
+  JSON request body. Automatically serialized and `Content-Type: application/json` is set.
+</ParamField>
+
+<ParamField path="x402" type="boolean" optional>
+  Whether to attach the x402 payment header. Requires the AgentDoor instance to have been configured with a wallet. Defaults to `false`.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number" optional>
+  Request timeout in milliseconds. Defaults to 30000 (30 seconds).
+</ParamField>
+
+<ParamField path="fetchFn" type="typeof globalThis.fetch" optional>
+  Custom fetch function override for this specific request.
+</ParamField>
+
+## Response Type
+
+All request methods return a `SessionResponse<T>` object:
+
+<ResponseField name="status" type="number">
+  HTTP status code (e.g., 200, 404, 500).
+</ResponseField>
+
+<ResponseField name="statusText" type="string">
+  HTTP status text (e.g., "OK", "Not Found").
+</ResponseField>
+
+<ResponseField name="headers" type="Headers">
+  Response headers as a Web API Headers object.
+</ResponseField>
+
+<ResponseField name="data" type="T">
+  Parsed response body. If the response content-type is `application/json`, this will be the parsed JSON. Otherwise, it will be the response text.
+</ResponseField>
+
+<ResponseField name="ok" type="boolean">
+  Whether the response status is in the 2xx range.
+</ResponseField>
+
+## Authentication
+
+The Session automatically handles authentication by:
+
+1. **Token-based auth** - Uses the JWT token from registration with `Authorization: Bearer <token>` header
+2. **Token refresh** - Automatically refreshes expired tokens before requests
+3. **401 retry** - Retries requests once if a 401 response is received (after refreshing)
+4. **API key fallback** - Falls back to the long-lived API key if token is unavailable
+
+```typescript
+// Authentication is handled automatically
+const response = await session.get("/protected/resource");
+
+// The session attaches: Authorization: Bearer <token>
+// If the token expires, it's refreshed transparently
+```
+
+## Payment Headers (x402)
+
+When the session is configured with an x402 wallet, you can attach payment headers to requests:
+
+```typescript
+const agent = new AgentDoor({
+  x402Wallet: {
+    address: "0x1234567890abcdef1234567890abcdef12345678",
+    network: "base",
+    currency: "USDC",
+    maxAmountPerRequest: "0.01"
+  }
+});
+
+const session = await agent.connect("https://api.example.com");
+
+// Request with payment
+const response = await session.post("/expensive/operation", {
+  body: { data: "..." },
+  x402: true // Attaches X-PAYMENT header
+});
+```
+
+The x402 payment header includes:
+- Wallet address
+- Network and currency
+- Request signature
+- Timestamp
+- Maximum payment amount
+
+## Error Handling
+
+Sessions throw `SessionError` exceptions for request failures:
+
+```typescript
+import { SessionError } from "@agentdoor/sdk";
+
+try {
+  const response = await session.get("/api/data");
+  
+  if (!response.ok) {
+    console.error("Request failed:", response.status, response.statusText);
+    console.error("Error body:", response.data);
+  }
+} catch (error) {
+  if (error instanceof SessionError) {
+    console.error(`Request failed [${error.statusCode}]:`, error.message);
+  }
+}
+```
+
+<ResponseField name="SessionError.message" type="string">
+  Human-readable error message describing the failure.
+</ResponseField>
+
+<ResponseField name="SessionError.statusCode" type="number">
+  HTTP status code (0 if the request failed before receiving a response).
+</ResponseField>
+
+## Type Definitions
+
+### RequestOptions
+
+```typescript
+interface RequestOptions {
+  params?: Record<string, string>;
+  headers?: Record<string, string>;
+  body?: unknown;
+  x402?: boolean;
+  timeoutMs?: number;
+  fetchFn?: typeof globalThis.fetch;
+}
+```
+
+### SessionResponse
+
+```typescript
+interface SessionResponse<T = unknown> {
+  status: number;
+  statusText: string;
+  headers: Headers;
+  data: T;
+  ok: boolean;
+}
+```
+
+### SessionConfig
+
+```typescript
+interface SessionConfig {
+  baseUrl: string;
+  credentials: ServiceCredentials;
+  discovery: AgentDoorDiscoveryDocument;
+  walletConfig?: X402WalletConfig;
+  onTokenRefresh?: TokenRefresher;
+  fetchFn?: typeof globalThis.fetch;
+}
+```
+
+### SessionError
+
+```typescript
+class SessionError extends Error {
+  readonly statusCode: number;
+  constructor(message: string, statusCode: number);
+}
+```
+
+## Examples
+
+### Basic Request
+
+```typescript
+const session = await agent.connect("https://api.example.com");
+
+const response = await session.get("/users/me");
+console.log("User data:", response.data);
+```
+
+### Request with Query Parameters
+
+```typescript
+const response = await session.get("/search", {
+  params: {
+    query: "weather",
+    limit: "10",
+    offset: "0"
+  }
+});
+```
+
+### POST with JSON Body
+
+```typescript
+const response = await session.post("/items", {
+  body: {
+    name: "New Item",
+    description: "A test item",
+    tags: ["test", "example"]
+  }
+});
+
+if (response.ok) {
+  console.log("Created item:", response.data);
+}
+```
+
+### Request with Custom Headers
+
+```typescript
+const response = await session.get("/data", {
+  headers: {
+    "Accept-Language": "en-US",
+    "X-Custom-Header": "value"
+  }
+});
+```
+
+### Payment-Enabled Request
+
+```typescript
+const response = await session.post("/premium/analyze", {
+  body: { text: "..." },
+  x402: true,
+  timeoutMs: 60000 // 60 second timeout
+});
+
+if (response.ok) {
+  console.log("Analysis result:", response.data);
+} else if (response.status === 402) {
+  console.error("Payment required:", response.data);
+}
+```
+
+### Error Handling with Status Codes
+
+```typescript
+try {
+  const response = await session.get("/protected/data");
+  
+  if (response.status === 404) {
+    console.log("Resource not found");
+  } else if (response.status === 403) {
+    console.log("Access forbidden - check scopes:", session.scopes);
+  } else if (!response.ok) {
+    console.error("Request failed:", response.status, response.data);
+  } else {
+    console.log("Success:", response.data);
+  }
+} catch (error) {
+  console.error("Network or timeout error:", error);
+}
+```

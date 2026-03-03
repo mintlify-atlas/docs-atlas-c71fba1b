@@ -1,0 +1,687 @@
+---
+title: Deploy to Vercel
+description: Deploy an agent-ready Next.js API to Vercel with serverless functions and edge middleware
+---
+
+Vercel provides a powerful platform for deploying Next.js applications with automatic scaling and built-in CI/CD. This guide covers deploying AgentDoor with Next.js to Vercel.
+
+## Quick Deploy
+
+Deploy the Vercel template in one click:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/0xaron/agentdoor/tree/main/packages/template-vercel/template)
+
+<Steps>
+  <Step title="Click Deploy Button">
+    Click the "Deploy with Vercel" button above to clone the template and create a new project.
+  </Step>
+  
+  <Step title="Configure Repository">
+    Choose a name for your repository and select whether to make it public or private.
+  </Step>
+  
+  <Step title="Set Environment Variables">
+    Set the `X402_WALLET` environment variable to your wallet address for receiving micropayments.
+  </Step>
+  
+  <Step title="Deploy">
+    Vercel automatically builds and deploys your application.
+  </Step>
+</Steps>
+
+## Manual Setup
+
+For custom deployments or integration into existing Next.js projects:
+
+### 1. Install Dependencies
+
+```bash
+npm install next react react-dom @agentdoor/next
+```
+
+### 2. Create Middleware
+
+Create `middleware.ts` in your project root with AgentDoor configuration:
+
+```typescript
+import { createAgentDoorMiddleware } from '@agentdoor/next';
+
+export default createAgentDoorMiddleware({
+  scopes: [
+    { id: 'data.read', description: 'Read application data', price: '$0.001/req' },
+    { id: 'data.write', description: 'Write application data', price: '$0.01/req' },
+  ],
+  service: {
+    name: 'My Agent-Ready API',
+    description: 'Next.js API with AgentDoor authentication',
+  },
+  x402: {
+    network: 'base',
+    currency: 'USDC',
+    paymentAddress: process.env.X402_WALLET || '0xYourWalletAddress',
+  },
+});
+
+export const config = {
+  matcher: ['/api/:path*', '/.well-known/:path*', '/agentdoor/:path*'],
+};
+```
+
+### 3. Create API Routes
+
+Create API routes in `app/api/` (App Router) or `pages/api/` (Pages Router):
+
+#### App Router (app/api/data/route.ts)
+
+```typescript
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+  // AgentDoor middleware has already validated authentication
+  const agentId = request.headers.get('x-agentdoor-agent-id');
+  const scopes = request.headers.get('x-agentdoor-scopes');
+
+  return NextResponse.json({
+    success: true,
+    data: [/* your data */],
+    meta: {
+      agent: agentId || 'anonymous',
+      scopes: scopes ? scopes.split(',') : [],
+    },
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const agentId = request.headers.get('x-agentdoor-agent-id');
+  const scopes = request.headers.get('x-agentdoor-scopes');
+  
+  const grantedScopes = scopes ? scopes.split(',') : [];
+  if (!grantedScopes.includes('data.write')) {
+    return NextResponse.json(
+      { success: false, error: 'Insufficient scope: data.write required' },
+      { status: 403 }
+    );
+  }
+
+  const body = await request.json();
+  
+  return NextResponse.json({
+    success: true,
+    data: body,
+    meta: { agent: agentId }
+  });
+}
+```
+
+#### Pages Router (pages/api/data.ts)
+
+```typescript
+import type { NextApiRequest, NextApiResponse } from 'next';
+
+export default function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  const agentId = req.headers['x-agentdoor-agent-id'] as string;
+  const scopes = (req.headers['x-agentdoor-scopes'] as string || '').split(',');
+
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      success: true,
+      data: [/* your data */],
+      meta: { agent: agentId, scopes },
+    });
+  }
+  
+  if (req.method === 'POST') {
+    if (!scopes.includes('data.write')) {
+      return res.status(403).json({
+        success: false,
+        error: 'Insufficient scope: data.write required'
+      });
+    }
+    
+    return res.status(201).json({
+      success: true,
+      data: req.body,
+      meta: { agent: agentId }
+    });
+  }
+  
+  res.status(405).json({ error: 'Method not allowed' });
+}
+```
+
+### 4. Configure Next.js
+
+Create or update `next.config.js`:
+
+```javascript
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  // Enable serverless functions
+  experimental: {
+    // Optimize for serverless
+    outputStandalone: true,
+  },
+};
+
+module.exports = nextConfig;
+```
+
+### 5. Create vercel.json (Optional)
+
+For custom configuration, create `vercel.json`:
+
+```json
+{
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "devCommand": "next dev",
+  "installCommand": "npm install",
+  "functions": {
+    "app/api/**/*.ts": {
+      "maxDuration": 10
+    }
+  }
+}
+```
+
+## Deployment Methods
+
+### Deploy with Vercel CLI
+
+<Steps>
+  <Step title="Install Vercel CLI">
+    ```bash
+    npm install -g vercel
+    ```
+  </Step>
+  
+  <Step title="Login to Vercel">
+    ```bash
+    vercel login
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    # Deploy to preview
+    vercel
+    
+    # Deploy to production
+    vercel --prod
+    ```
+  </Step>
+</Steps>
+
+### Deploy with Git Integration
+
+<Steps>
+  <Step title="Connect Repository">
+    1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
+    2. Click **Add New** → **Project**
+    3. Import your Git repository (GitHub, GitLab, or Bitbucket)
+  </Step>
+  
+  <Step title="Configure Project">
+    Vercel automatically detects Next.js configuration. Adjust if needed:
+    - **Framework Preset**: Next.js
+    - **Build Command**: `next build`
+    - **Output Directory**: `.next`
+  </Step>
+  
+  <Step title="Set Environment Variables">
+    Add environment variables in the Vercel dashboard or during setup.
+  </Step>
+  
+  <Step title="Deploy">
+    Click **Deploy**. Vercel builds and deploys your application automatically.
+  </Step>
+</Steps>
+
+### Automatic Deployments
+
+Once connected to Git, Vercel automatically:
+- Deploys every push to production branch (e.g., `main`)
+- Creates preview deployments for pull requests
+- Runs build checks and provides deployment URLs
+
+## Environment Variables
+
+Manage environment variables via Vercel dashboard or CLI.
+
+### Required Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `X402_WALLET` | Wallet address for receiving x402 payments | Yes |
+| `DATABASE_URL` | PostgreSQL connection string (if using database) | Conditional |
+
+### Setting Variables via Dashboard
+
+<Steps>
+  <Step title="Open Project Settings">
+    Navigate to your project in Vercel dashboard and click **Settings**.
+  </Step>
+  
+  <Step title="Add Environment Variables">
+    Go to **Environment Variables** section and click **Add New**.
+  </Step>
+  
+  <Step title="Configure Variable">
+    - **Name**: `X402_WALLET`
+    - **Value**: Your wallet address
+    - **Environments**: Select Production, Preview, and/or Development
+  </Step>
+  
+  <Step title="Save">
+    Click **Save**. Redeploy your application to apply changes.
+  </Step>
+</Steps>
+
+### Setting Variables via CLI
+
+```bash
+# Add environment variable
+vercel env add X402_WALLET
+# Enter value when prompted
+# Select environments (production, preview, development)
+
+# List environment variables
+vercel env ls
+
+# Pull environment variables to .env.local
+vercel env pull .env.local
+```
+
+### Local Development
+
+Create `.env.local` for local development:
+
+```bash
+# .env.local (never commit this file)
+X402_WALLET=0xYourWalletAddress
+DATABASE_URL=postgresql://localhost:5432/agentdoor
+```
+
+Next.js automatically loads `.env.local` during development.
+
+## Storage Configuration
+
+Vercel serverless functions are stateless. Use external storage:
+
+### PostgreSQL (Recommended)
+
+Use managed PostgreSQL services like:
+
+- [Vercel Postgres](https://vercel.com/docs/storage/vercel-postgres)
+- [Neon](https://neon.tech/)
+- [Supabase](https://supabase.com/)
+- [Railway](https://railway.app/)
+
+```typescript
+import { PostgresStore } from '@agentdoor/core/storage/postgres';
+
+const store = new PostgresStore({
+  connectionString: process.env.DATABASE_URL
+});
+
+export default createAgentDoorMiddleware({
+  // ... other config
+  storage: store
+});
+```
+
+### Vercel Postgres (Integrated)
+
+Vercel provides integrated PostgreSQL:
+
+<Steps>
+  <Step title="Create Database">
+    In Vercel dashboard:
+    1. Navigate to **Storage** tab
+    2. Click **Create Database**
+    3. Select **Postgres**
+  </Step>
+  
+  <Step title="Connect to Project">
+    Link the database to your project. Vercel automatically sets environment variables:
+    - `POSTGRES_URL`
+    - `POSTGRES_PRISMA_URL`
+    - `POSTGRES_URL_NON_POOLING`
+  </Step>
+  
+  <Step title="Use in Application">
+    ```typescript
+    import { PostgresStore } from '@agentdoor/core/storage/postgres';
+
+    const store = new PostgresStore({
+      connectionString: process.env.POSTGRES_URL
+    });
+    ```
+  </Step>
+</Steps>
+
+### Redis (Session Storage)
+
+For caching and session data:
+
+```typescript
+import { createClient } from 'redis';
+
+const redis = createClient({
+  url: process.env.REDIS_URL
+});
+
+await redis.connect();
+```
+
+Consider [Upstash Redis](https://upstash.com/) for serverless-compatible Redis.
+
+## Edge Middleware vs Serverless Functions
+
+Vercel supports both Edge Middleware and Serverless Functions:
+
+### Edge Middleware
+
+Runs at the edge before requests reach functions:
+
+```typescript
+// middleware.ts
+import { createAgentDoorMiddleware } from '@agentdoor/next';
+
+export default createAgentDoorMiddleware({
+  // ... config
+});
+
+export const config = {
+  matcher: ['/api/:path*'],
+};
+```
+
+**Pros:**
+- Faster response times (runs at edge)
+- Lower costs (runs before functions)
+- Global distribution
+
+**Cons:**
+- Limited runtime APIs
+- 4MB size limit
+- Cannot use Node.js-specific modules
+
+### Serverless Functions
+
+Runs in serverless functions:
+
+```typescript
+// app/api/data/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+  // Full Node.js runtime available
+}
+```
+
+**Pros:**
+- Full Node.js runtime
+- No size restrictions
+- Access to all npm packages
+
+**Cons:**
+- Higher latency
+- Cold starts
+- Higher costs
+
+<Note>
+  AgentDoor middleware works in both Edge and Serverless contexts. Choose based on your requirements.
+</Note>
+
+## Custom Domains
+
+<Steps>
+  <Step title="Add Domain">
+    In Vercel dashboard:
+    1. Navigate to **Settings** → **Domains**
+    2. Enter your domain name
+    3. Click **Add**
+  </Step>
+  
+  <Step title="Configure DNS">
+    Vercel provides DNS configuration instructions:
+    
+    **Option A: Nameservers (Recommended)**
+    Point your domain's nameservers to Vercel:
+    ```
+    ns1.vercel-dns.com
+    ns2.vercel-dns.com
+    ```
+    
+    **Option B: A Record**
+    Add an A record pointing to Vercel:
+    ```
+    A  @  76.76.21.21
+    ```
+    
+    **Option C: CNAME**
+    Add a CNAME record:
+    ```
+    CNAME  api  cname.vercel-dns.com
+    ```
+  </Step>
+  
+  <Step title="Verify">
+    Vercel automatically verifies DNS configuration and provisions SSL certificates.
+  </Step>
+</Steps>
+
+## Performance Optimization
+
+### Enable Caching
+
+Cache responses at the edge:
+
+```typescript
+export async function GET(request: NextRequest) {
+  const response = NextResponse.json({ data: [] });
+  
+  // Cache for 60 seconds
+  response.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=30');
+  
+  return response;
+}
+```
+
+### Optimize Bundle Size
+
+Reduce function size:
+
+```javascript
+// next.config.js
+module.exports = {
+  experimental: {
+    optimizePackageImports: ['@agentdoor/next'],
+  },
+};
+```
+
+### Use Edge Runtime
+
+Opt into Edge Runtime for better performance:
+
+```typescript
+export const runtime = 'edge'; // Use Edge Runtime
+
+export async function GET(request: NextRequest) {
+  // This runs at the edge
+}
+```
+
+## Monitoring and Logs
+
+### Viewing Logs
+
+View logs in Vercel dashboard:
+
+1. Navigate to your project
+2. Click **Logs** tab
+3. Filter by deployment, function, or time range
+
+Or via CLI:
+
+```bash
+# Stream logs
+vercel logs
+
+# View logs for specific deployment
+vercel logs [deployment-url]
+```
+
+### Analytics
+
+Enable Vercel Analytics:
+
+```typescript
+// app/layout.tsx
+import { Analytics } from '@vercel/analytics/react';
+
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        {children}
+        <Analytics />
+      </body>
+    </html>
+  );
+}
+```
+
+### Custom Logging
+
+Add structured logging:
+
+```typescript
+export async function POST(request: NextRequest) {
+  const start = Date.now();
+  
+  try {
+    // Your logic here
+    
+    const duration = Date.now() - start;
+    console.log(JSON.stringify({
+      method: request.method,
+      path: request.nextUrl.pathname,
+      duration,
+      status: 200
+    }));
+    
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Request failed:', error);
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+  }
+}
+```
+
+## Scaling
+
+### Automatic Scaling
+
+Vercel automatically scales serverless functions based on traffic. No configuration required.
+
+### Resource Limits
+
+| Tier | Execution Time | Memory | Bandwidth |
+|------|---------------|---------|----------|
+| Hobby | 10s | 1024MB | 100GB/month |
+| Pro | 60s | 3008MB | 1TB/month |
+| Enterprise | 900s | 3008MB | Custom |
+
+### Concurrency
+
+Each function instance handles one request at a time. Vercel creates new instances as needed.
+
+## Troubleshooting
+
+### Build Failures
+
+Common issues:
+
+1. **TypeScript errors**: Run `npm run build` locally to check
+2. **Missing dependencies**: Ensure all dependencies are in `package.json`
+3. **Environment variables**: Verify variables are set for build environment
+
+### Function Timeouts
+
+If functions timeout:
+
+1. Optimize slow operations
+2. Use background jobs for long tasks
+3. Upgrade to Pro for longer execution time
+
+### Cold Starts
+
+Reduce cold start impact:
+
+1. Minimize dependencies
+2. Use Edge Runtime when possible
+3. Keep functions small and focused
+
+### Database Connection Issues
+
+For connection pooling:
+
+```typescript
+import { Pool } from 'pg';
+
+const pool = new Pool({
+  connectionString: process.env.POSTGRES_URL,
+  max: 10, // Connection pool size
+});
+
+export async function GET() {
+  const client = await pool.connect();
+  try {
+    // Use client
+  } finally {
+    client.release();
+  }
+}
+```
+
+Or use a connection pooler like [PgBouncer](https://www.pgbouncer.org/).
+
+## Best Practices
+
+1. **Use Environment Variables**: Never hardcode secrets in code.
+
+2. **Enable Analytics**: Monitor performance and usage patterns.
+
+3. **Configure Caching**: Cache responses to reduce function invocations.
+
+4. **Optimize Bundle Size**: Keep dependencies minimal for faster cold starts.
+
+5. **Use Edge Runtime**: When possible, use Edge Runtime for better performance.
+
+6. **Set Function Timeouts**: Configure appropriate timeouts in `vercel.json`.
+
+7. **Monitor Logs**: Regularly review logs for errors and performance issues.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Next.js Integration" icon="react" href="/server/nextjs">
+    Learn more about Next.js with AgentDoor
+  </Card>
+  <Card title="PostgreSQL Storage" icon="database" href="/advanced/storage">
+    Configure PostgreSQL storage
+  </Card>
+  <Card title="Rate Limiting" icon="gauge" href="/advanced/rate-limiting">
+    Configure rate limits for serverless functions
+  </Card>
+  <Card title="Vercel Docs" icon="book" href="https://vercel.com/docs">
+    Official Vercel documentation
+  </Card>
+</CardGroup>

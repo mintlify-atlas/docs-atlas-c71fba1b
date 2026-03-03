@@ -1,0 +1,405 @@
+---
+title: Configuration
+description: AgentDoor configuration schema and validation
+---
+
+The `@agentdoor/core` configuration system uses Zod for runtime validation with strict type safety. This reference covers the complete `AgentDoorConfig` schema and all available options.
+
+## AgentDoorConfig
+
+The main configuration object passed to AgentDoor initialization.
+
+```typescript
+import { AgentDoorConfig } from "@agentdoor/core";
+
+const config: AgentDoorConfig = {
+  scopes: [
+    {
+      id: "weather.read",
+      description: "Read weather data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour"
+    }
+  ],
+  storage: { driver: "sqlite", url: "./agentdoor.db" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: "0x..."
+  }
+};
+```
+
+### Required Fields
+
+<ParamField path="scopes" type="ScopeDefinition[]" required>
+  Array of available scopes that agents can request. At least one scope must be defined.
+  
+  <Expandable title="ScopeDefinition properties">
+    <ResponseField name="id" type="string" required>
+      Unique scope identifier. Must start with a letter and contain only letters, digits, underscores, and dots.
+      
+      Example: `"weather.read"`, `"api.v1.users"`
+    </ResponseField>
+    
+    <ResponseField name="description" type="string" required>
+      Human-readable description of what this scope grants.
+      
+      Example: `"Read weather forecast data"`
+    </ResponseField>
+    
+    <ResponseField name="price" type="string">
+      Pricing string for this scope.
+      
+      Example: `"$0.001/req"`, `"$5.00/month"`
+    </ResponseField>
+    
+    <ResponseField name="rateLimit" type="string">
+      Scope-specific rate limit override.
+      
+      Example: `"1000/hour"`, `"100/day"`
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Storage Configuration
+
+<ParamField path="storage" type="StorageConfig">
+  Storage backend configuration. Defaults to in-memory storage.
+  
+  <Expandable title="StorageConfig properties">
+    <ResponseField name="driver" type="'memory' | 'sqlite' | 'postgres' | 'redis'" required>
+      Storage driver to use.
+      
+      - `memory`: In-memory storage (development only)
+      - `sqlite`: SQLite database (single-process)
+      - `postgres`: PostgreSQL database (multi-process)
+      - `redis`: Redis storage (distributed)
+    </ResponseField>
+    
+    <ResponseField name="url" type="string">
+      Connection URL for database-backed stores.
+      
+      Examples:
+      - SQLite: `"./agentdoor.db"`
+      - Postgres: `"postgresql://user:pass@localhost/agentdoor"`
+      - Redis: `"redis://localhost:6379"`
+    </ResponseField>
+    
+    <ResponseField name="options" type="Record<string, unknown>">
+      Additional driver-specific options.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Rate Limiting
+
+<ParamField path="rateLimit" type="RateLimitConfig">
+  Default rate limit applied to new agents. Defaults to 1000 requests per hour.
+  
+  <Expandable title="RateLimitConfig properties">
+    <ResponseField name="requests" type="number" required>
+      Maximum number of requests in the window. Must be a positive integer.
+    </ResponseField>
+    
+    <ResponseField name="window" type="string" required>
+      Time window string. Format: `{number}{unit}` where unit is:
+      - `s`: seconds
+      - `m`: minutes
+      - `h`: hours
+      - `d`: days
+      
+      Examples: `"1h"`, `"30m"`, `"1d"`
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="registrationRateLimit" type="RateLimitConfig">
+  Rate limit for the registration endpoint itself. Defaults to 10 registrations per hour.
+</ParamField>
+
+### x402 Payment Protocol
+
+<ParamField path="x402" type="X402Config">
+  x402 payment protocol configuration. If not provided, payment features are disabled.
+  
+  <Expandable title="X402Config properties">
+    <ResponseField name="network" type="string" required>
+      Blockchain network. Common values: `"base"`, `"solana"`, `"ethereum"`
+    </ResponseField>
+    
+    <ResponseField name="currency" type="string" required>
+      Payment currency. Example: `"USDC"`, `"ETH"`
+    </ResponseField>
+    
+    <ResponseField name="paymentAddress" type="string" required>
+      Your wallet address for receiving payments.
+    </ResponseField>
+    
+    <ResponseField name="facilitator" type="string">
+      x402 facilitator URL. Defaults to `https://x402.org/facilitator`
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### JWT Configuration
+
+<ParamField path="jwt" type="JwtConfig">
+  JWT token settings for agent authentication.
+  
+  <Expandable title="JwtConfig properties">
+    <ResponseField name="secret" type="string">
+      HMAC secret for JWT signing. Must be at least 16 characters. Auto-generated if not provided.
+    </ResponseField>
+    
+    <ResponseField name="expiresIn" type="string">
+      Token expiration duration. Format: `{number}{unit}`. Defaults to `"1h"`.
+      
+      Examples: `"1h"`, `"24h"`, `"7d"`
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Cryptographic Signing
+
+<ParamField path="signing" type="SigningConfig">
+  Cryptographic signing algorithm configuration.
+  
+  <Expandable title="SigningConfig properties">
+    <ResponseField name="algorithm" type="'ed25519' | 'secp256k1'" required>
+      Signature algorithm. Defaults to `"ed25519"`.
+      
+      - `ed25519`: Fast, modern, recommended
+      - `secp256k1`: Bitcoin/Ethereum-compatible
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Service Metadata
+
+<ParamField path="service" type="ServiceConfig">
+  Service metadata for discovery documents.
+  
+  <Expandable title="ServiceConfig properties">
+    <ResponseField name="name" type="string">
+      Service name. Defaults to `"AgentDoor Service"`
+    </ResponseField>
+    
+    <ResponseField name="description" type="string">
+      Service description. Defaults to `"An AgentDoor-enabled API service"`
+    </ResponseField>
+    
+    <ResponseField name="docsUrl" type="string">
+      URL to API documentation. Must be a valid URL.
+    </ResponseField>
+    
+    <ResponseField name="supportEmail" type="string">
+      Support email address. Must be a valid email.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Companion Protocols
+
+<ParamField path="companion" type="CompanionConfig">
+  Auto-generate endpoints for companion protocols.
+  
+  <Expandable title="CompanionConfig properties">
+    <ResponseField name="a2aAgentCard" type="boolean">
+      Auto-generate `/.well-known/agent-card.json` for A2A protocol. Defaults to `true`.
+    </ResponseField>
+    
+    <ResponseField name="mcpServer" type="boolean">
+      Auto-generate `/mcp` endpoint. Defaults to `false`.
+    </ResponseField>
+    
+    <ResponseField name="oauthCompat" type="boolean">
+      Expose OAuth 2.1 compatibility endpoints for MCP clients. Defaults to `false`.
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Other Configuration
+
+<ParamField path="pricing" type="Record<string, string>">
+  Global pricing map. Scope ID to price string.
+  
+  Example: `{ "weather.read": "$0.001/req" }`
+</ParamField>
+
+<ParamField path="challengeExpirySeconds" type="number">
+  Challenge expiry duration in seconds. Defaults to 300 (5 minutes).
+</ParamField>
+
+<ParamField path="mode" type="'live' | 'test'">
+  API key mode. Affects the prefix of generated API keys.
+  - `live`: Keys prefixed with `agk_live_`
+  - `test`: Keys prefixed with `agk_test_`
+  
+  Defaults to `"live"`.
+</ParamField>
+
+### Callbacks
+
+<ParamField path="onAgentRegistered" type="(agent: Agent) => void | Promise<void>">
+  Callback invoked when an agent successfully completes registration.
+  
+  ```typescript
+  onAgentRegistered: async (agent) => {
+    console.log(`Agent registered: ${agent.id}`);
+    await notifySlack(`New agent: ${agent.metadata.name}`);
+  }
+  ```
+</ParamField>
+
+<ParamField path="onAgentAuthenticated" type="(agent: Agent) => void | Promise<void>">
+  Callback invoked when an agent successfully authenticates.
+  
+  ```typescript
+  onAgentAuthenticated: async (agent) => {
+    console.log(`Agent authenticated: ${agent.id}`);
+    await updateMetrics(agent.id);
+  }
+  ```
+</ParamField>
+
+## Validation Functions
+
+### validateConfig
+
+Validates an AgentDoorConfig object against the Zod schema.
+
+```typescript
+import { validateConfig } from "@agentdoor/core";
+
+const config = { /* ... */ };
+const validated = validateConfig(config);
+```
+
+<ParamField path="config" type="unknown" required>
+  Configuration object to validate.
+</ParamField>
+
+<ResponseField name="returns" type="AgentDoorConfig">
+  The validated configuration object.
+</ResponseField>
+
+**Throws:** `InvalidConfigError` if validation fails with detailed error messages.
+
+```typescript
+try {
+  validateConfig({ scopes: [] }); // Invalid: empty scopes
+} catch (error) {
+  console.error(error.message);
+  // "Configuration validation failed:
+  //   - scopes: At least one scope must be defined"
+}
+```
+
+### resolveConfig
+
+Validates and resolves an AgentDoorConfig, applying all default values.
+
+```typescript
+import { resolveConfig } from "@agentdoor/core";
+
+const config = {
+  scopes: [{ id: "api.read", description: "Read API" }]
+};
+
+const resolved = resolveConfig(config);
+// Returns ResolvedConfig with all defaults applied:
+// - storage: { driver: "memory" }
+// - rateLimit: { requests: 1000, window: "1h" }
+// - jwt.secret: auto-generated
+// - etc.
+```
+
+<ParamField path="config" type="AgentDoorConfig" required>
+  Configuration object to resolve.
+</ParamField>
+
+<ResponseField name="returns" type="ResolvedConfig">
+  Configuration with all defaults applied. No optional fields (except x402).
+</ResponseField>
+
+## Configuration Examples
+
+### Minimal Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [
+    { id: "api.read", description: "Read access" }
+  ]
+};
+```
+
+### Production Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [
+    {
+      id: "weather.read",
+      description: "Read weather forecast data",
+      price: "$0.001/req",
+      rateLimit: "5000/hour"
+    },
+    {
+      id: "weather.write",
+      description: "Submit weather observations",
+      price: "$0.005/req",
+      rateLimit: "100/hour"
+    }
+  ],
+  storage: {
+    driver: "postgres",
+    url: process.env.DATABASE_URL
+  },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.WALLET_ADDRESS!,
+    facilitator: "https://x402.org/facilitator"
+  },
+  rateLimit: {
+    requests: 10000,
+    window: "1h"
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET,
+    expiresIn: "24h"
+  },
+  service: {
+    name: "Weather API",
+    description: "Professional weather data for AI agents",
+    docsUrl: "https://api.weather.com/docs",
+    supportEmail: "support@weather.com"
+  },
+  mode: "live",
+  onAgentRegistered: async (agent) => {
+    await analytics.track("agent_registered", {
+      agentId: agent.id,
+      scopes: agent.scopesGranted
+    });
+  }
+};
+```
+
+### Development Configuration
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [
+    { id: "api.read", description: "Read access" },
+    { id: "api.write", description: "Write access" }
+  ],
+  storage: { driver: "memory" },
+  mode: "test",
+  rateLimit: {
+    requests: 100000,
+    window: "1h"
+  }
+};
+```

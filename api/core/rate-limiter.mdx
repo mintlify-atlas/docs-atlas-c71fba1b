@@ -1,0 +1,416 @@
+---
+title: Rate Limiter
+description: Token bucket rate limiting for agents
+---
+
+The `@agentdoor/core` rate limiter provides an in-memory token bucket implementation for controlling request rates on a per-agent basis.
+
+## RateLimiter Class
+
+A high-performance in-memory token bucket rate limiter with automatic cleanup.
+
+```typescript
+import { RateLimiter } from "@agentdoor/core";
+
+const limiter = new RateLimiter(
+  { requests: 100, window: "1h" },  // Default config
+  60_000  // Cleanup interval (ms)
+);
+
+const result = limiter.check("agent_123");
+if (!result.allowed) {
+  return {
+    error: "Rate limit exceeded",
+    retryAfter: result.retryAfter
+  };
+}
+```
+
+### Constructor
+
+<ParamField path="defaultConfig" type="RateLimitConfig">
+  Default rate limit applied when `check()` is called without config.
+  
+  Defaults to:
+  ```typescript
+  { requests: 1000, window: "1h" }
+  ```
+</ParamField>
+
+<ParamField path="cleanupIntervalMs" type="number">
+  How often to clean expired buckets in milliseconds.
+  
+  Defaults to `60000` (60 seconds). Set to `0` to disable automatic cleanup.
+</ParamField>
+
+## Methods
+
+### check
+
+Check if a request from the given key is allowed under the rate limit. Consumes one token if allowed.
+
+```typescript
+const result = limiter.check(
+  "agent_123",
+  { requests: 100, window: "1h" }
+);
+
+if (result.allowed) {
+  console.log(`${result.remaining} requests remaining`);
+  console.log(`Limit resets at ${new Date(result.resetAt)}`);
+} else {
+  console.log(`Rate limited. Retry in ${result.retryAfter}ms`);
+}
+```
+
+<ParamField path="key" type="string" required>
+  Unique identifier (agent ID, IP address, etc.).
+</ParamField>
+
+<ParamField path="config" type="RateLimitConfig">
+  Rate limit configuration. Uses default if not provided.
+  
+  <Expandable title="RateLimitConfig properties">
+    <ResponseField name="requests" type="number" required>
+      Maximum number of requests in the window.
+    </ResponseField>
+    
+    <ResponseField name="window" type="string" required>
+      Time window string. Format: `{number}{unit}` where unit is `s`, `m`, `h`, or `d`.
+      
+      Examples: `"1h"`, `"30m"`, `"1d"`
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="returns" type="RateLimitResult">
+  Rate limit check result.
+  
+  <Expandable title="RateLimitResult properties">
+    <ResponseField name="allowed" type="boolean" required>
+      Whether the request is allowed.
+    </ResponseField>
+    
+    <ResponseField name="remaining" type="number" required>
+      Remaining requests in the current window.
+    </ResponseField>
+    
+    <ResponseField name="limit" type="number" required>
+      Total limit (maximum requests per window).
+    </ResponseField>
+    
+    <ResponseField name="resetAt" type="number" required>
+      When the current window resets (unix timestamp in milliseconds).
+    </ResponseField>
+    
+    <ResponseField name="retryAfter" type="number">
+      Milliseconds until the next token is available. Only present when `allowed` is `false`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### consume
+
+Consume multiple tokens at once (for batch or weighted requests).
+
+```typescript
+const result = limiter.consume(
+  "agent_123",
+  10,  // Consume 10 tokens
+  { requests: 100, window: "1h" }
+);
+
+if (!result.allowed) {
+  console.log(`Insufficient tokens. Need 10, have ${result.remaining}`);
+}
+```
+
+<ParamField path="key" type="string" required>
+  Unique identifier.
+</ParamField>
+
+<ParamField path="tokens" type="number" required>
+  Number of tokens to consume.
+</ParamField>
+
+<ParamField path="config" type="RateLimitConfig">
+  Rate limit configuration. Uses default if not provided.
+</ParamField>
+
+<ResponseField name="returns" type="RateLimitResult">
+  Rate limit check result.
+</ResponseField>
+
+### peek
+
+Get the current state of a rate limit bucket without consuming tokens.
+
+```typescript
+const result = limiter.peek("agent_123");
+if (result) {
+  console.log(`Current tokens: ${result.remaining}/${result.limit}`);
+} else {
+  console.log("No bucket exists for this key");
+}
+```
+
+<ParamField path="key" type="string" required>
+  Unique identifier.
+</ParamField>
+
+<ParamField path="config" type="RateLimitConfig">
+  Rate limit configuration.
+</ParamField>
+
+<ResponseField name="returns" type="RateLimitResult | null">
+  Current remaining tokens and limit info, or `null` if no bucket exists.
+</ResponseField>
+
+### reset
+
+Reset the rate limit bucket for a given key.
+
+```typescript
+limiter.reset("agent_123");
+// Next request from agent_123 will have a full bucket
+```
+
+<ParamField path="key" type="string" required>
+  Unique identifier to reset.
+</ParamField>
+
+### resetAll
+
+Remove all rate limit buckets.
+
+```typescript
+limiter.resetAll();
+// All agents start with fresh buckets
+```
+
+### destroy
+
+Stop the periodic cleanup interval and clear all buckets. Call during shutdown to prevent dangling timers.
+
+```typescript
+// On server shutdown:
+limiter.destroy();
+```
+
+### size (getter)
+
+Get the number of active rate limit buckets (for monitoring).
+
+```typescript
+console.log(`Tracking ${limiter.size} active agents`);
+```
+
+## Utility Functions
+
+### parseWindow
+
+Parse a rate limit window string into milliseconds.
+
+```typescript
+import { parseWindow } from "@agentdoor/core";
+
+const ms = parseWindow("1h");   // 3600000
+const ms = parseWindow("30m");  // 1800000
+const ms = parseWindow("1d");   // 86400000
+```
+
+<ParamField path="window" type="string" required>
+  Window duration string. Format: `{number}{unit}` where unit is:
+  - `s`: seconds
+  - `m`: minutes
+  - `h`: hours
+  - `d`: days
+</ParamField>
+
+<ResponseField name="returns" type="number">
+  Duration in milliseconds.
+</ResponseField>
+
+**Throws:** Error if format is invalid.
+
+## Usage Examples
+
+### Basic Agent Rate Limiting
+
+```typescript
+import { RateLimiter } from "@agentdoor/core";
+import type { Request, Response, NextFunction } from "express";
+
+const limiter = new RateLimiter();
+
+// Middleware for agent rate limiting
+function rateLimitMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  if (!req.agent) {
+    return next(); // Not authenticated
+  }
+  
+  const result = limiter.check(
+    req.agent.id,
+    req.agent.rateLimit
+  );
+  
+  // Set rate limit headers
+  res.setHeader("X-RateLimit-Limit", result.limit);
+  res.setHeader("X-RateLimit-Remaining", result.remaining);
+  res.setHeader("X-RateLimit-Reset", result.resetAt);
+  
+  if (!result.allowed) {
+    res.setHeader("Retry-After", Math.ceil(result.retryAfter! / 1000));
+    return res.status(429).json({
+      error: "Rate limit exceeded",
+      retryAfter: result.retryAfter
+    });
+  }
+  
+  next();
+}
+
+app.use(rateLimitMiddleware);
+```
+
+### Per-Endpoint Rate Limiting
+
+```typescript
+const globalLimiter = new RateLimiter(
+  { requests: 1000, window: "1h" }
+);
+
+const registrationLimiter = new RateLimiter(
+  { requests: 10, window: "1h" }
+);
+
+app.post("/agentdoor/register", (req, res) => {
+  const ip = req.ip;
+  const result = registrationLimiter.check(ip);
+  
+  if (!result.allowed) {
+    return res.status(429).json({
+      error: "Too many registration attempts",
+      retryAfter: result.retryAfter
+    });
+  }
+  
+  // Process registration...
+});
+```
+
+### Weighted Rate Limiting
+
+```typescript
+const limiter = new RateLimiter(
+  { requests: 100, window: "1h" }
+);
+
+// Different costs for different operations
+app.post("/api/simple", (req, res) => {
+  const result = limiter.consume(req.agent.id, 1);
+  if (!result.allowed) {
+    return res.status(429).json({ error: "Rate limit exceeded" });
+  }
+  // Handle simple request...
+});
+
+app.post("/api/expensive", (req, res) => {
+  const result = limiter.consume(req.agent.id, 10);
+  if (!result.allowed) {
+    return res.status(429).json({
+      error: "Insufficient rate limit tokens",
+      required: 10,
+      available: result.remaining
+    });
+  }
+  // Handle expensive request...
+});
+```
+
+### Dynamic Rate Limits
+
+```typescript
+const limiter = new RateLimiter();
+
+app.use((req, res, next) => {
+  if (!req.agent) return next();
+  
+  // Higher limits for premium agents
+  const config = req.agent.metadata.tier === "premium"
+    ? { requests: 10000, window: "1h" }
+    : { requests: 1000, window: "1h" };
+  
+  const result = limiter.check(req.agent.id, config);
+  
+  if (!result.allowed) {
+    return res.status(429).json({
+      error: "Rate limit exceeded",
+      tier: req.agent.metadata.tier
+    });
+  }
+  
+  next();
+});
+```
+
+### Monitoring and Alerting
+
+```typescript
+const limiter = new RateLimiter();
+
+// Monitor rate limiter usage
+setInterval(() => {
+  const activeBuckets = limiter.size;
+  console.log(`Active rate limit buckets: ${activeBuckets}`);
+  
+  // Alert if too many buckets (potential memory issue)
+  if (activeBuckets > 10000) {
+    console.warn("High number of active rate limit buckets!");
+  }
+}, 60_000);
+
+// Check current state before processing
+app.post("/api/batch", async (req, res) => {
+  const current = limiter.peek(req.agent.id);
+  
+  if (!current || current.remaining < 10) {
+    return res.status(429).json({
+      error: "Insufficient tokens for batch operation",
+      available: current?.remaining ?? 0,
+      required: 10
+    });
+  }
+  
+  // Process batch...
+});
+```
+
+## Token Bucket Algorithm
+
+The rate limiter uses a **token bucket algorithm** with continuous refill:
+
+1. Each key (agent) gets a bucket with a maximum capacity
+2. Tokens are continuously refilled based on elapsed time
+3. Each request consumes one token (or more with `consume()`)
+4. Requests are allowed only if sufficient tokens are available
+5. Buckets automatically refill to maximum capacity over time
+
+**Advantages:**
+- Smooth rate limiting (no sudden window resets)
+- Allows burst traffic up to bucket capacity
+- Memory efficient (buckets auto-cleaned when idle)
+- No external dependencies required
+
+## Performance Considerations
+
+- **Memory usage**: Each active key uses ~100 bytes
+- **Cleanup**: Stale buckets are automatically removed after 2x window duration
+- **Precision**: Uses millisecond-precision timestamps
+- **Thread safety**: Not thread-safe; use one instance per process
+
+For distributed rate limiting across multiple processes, use Redis or a similar external store.

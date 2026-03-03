@@ -1,0 +1,202 @@
+---
+title: Discovery Endpoint
+description: Service discovery and capability advertisement
+---
+
+The discovery endpoint is the entry point for agents to learn about your service's capabilities, authentication requirements, available scopes, and pricing.
+
+## Endpoint
+
+```
+GET /.well-known/agentdoor.json
+```
+
+This endpoint follows the `/.well-known/` convention used by OpenID Connect and other discovery protocols. It returns a JSON document describing everything an agent needs to interact with your service.
+
+## Response Format
+
+The discovery document is returned with the following headers:
+
+- `Content-Type: application/json; charset=utf-8`
+- `Cache-Control: public, max-age=3600` (1 hour cache)
+- `X-AgentDoor-Version: 1.0`
+
+<ResponseField name="agentdoor_version" type="string" required>
+  Protocol version, currently `"1.0"`
+</ResponseField>
+
+<ResponseField name="service_name" type="string" required>
+  Human-readable service name
+</ResponseField>
+
+<ResponseField name="service_description" type="string" required>
+  Brief description of what your service does
+</ResponseField>
+
+<ResponseField name="registration_endpoint" type="string" required>
+  Path to the registration endpoint, always `"/agentdoor/register"`
+</ResponseField>
+
+<ResponseField name="auth_endpoint" type="string" required>
+  Path to the authentication endpoint, always `"/agentdoor/auth"`
+</ResponseField>
+
+<ResponseField name="scopes_available" type="array" required>
+  List of scopes that agents can request access to
+  
+  <Expandable title="scope object">
+    <ResponseField name="id" type="string" required>
+      Unique scope identifier, e.g. `"weather.read"`
+    </ResponseField>
+    
+    <ResponseField name="description" type="string" required>
+      Human-readable description of what this scope grants
+    </ResponseField>
+    
+    <ResponseField name="price" type="string">
+      Pricing for this scope, e.g. `"$0.001/req"`, `"$5/month"`
+    </ResponseField>
+    
+    <ResponseField name="rate_limit" type="string">
+      Rate limit for this scope, e.g. `"1000/hour"`
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="auth_methods" type="array" required>
+  Supported authentication methods. Possible values:
+  - `"ed25519-challenge"` - Ed25519 public key challenge-response
+  - `"x402-wallet"` - Crypto wallet signature (when x402 is enabled)
+  - `"jwt"` - JWT token (available after initial authentication)
+</ResponseField>
+
+<ResponseField name="rate_limits" type="object" required>
+  Rate limit information
+  
+  <Expandable title="rate_limits properties">
+    <ResponseField name="registration" type="string" required>
+      Rate limit for the registration endpoint, e.g. `"10/1h"`
+    </ResponseField>
+    
+    <ResponseField name="default" type="string" required>
+      Default rate limit for registered agents, e.g. `"1000/1h"`
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="companion_protocols" type="object" required>
+  Links to companion protocol endpoints
+  
+  <Expandable title="companion_protocols properties">
+    <ResponseField name="a2a_agent_card" type="string">
+      Path to A2A agent card, e.g. `"/.well-known/agent-card.json"`
+    </ResponseField>
+    
+    <ResponseField name="mcp_server" type="string">
+      Path to MCP server endpoint, e.g. `"/mcp"`
+    </ResponseField>
+    
+    <ResponseField name="x402_bazaar" type="boolean">
+      Whether x402 Bazaar protocol is enabled
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="payment" type="object">
+  Payment protocol configuration (only present when x402 is enabled)
+  
+  <Expandable title="payment properties">
+    <ResponseField name="protocol" type="string" required>
+      Payment protocol name, always `"x402"`
+    </ResponseField>
+    
+    <ResponseField name="version" type="string" required>
+      Protocol version, e.g. `"2.0"`
+    </ResponseField>
+    
+    <ResponseField name="networks" type="array" required>
+      Supported blockchain networks, e.g. `["base", "solana"]`
+    </ResponseField>
+    
+    <ResponseField name="currency" type="array" required>
+      Accepted payment currencies, e.g. `["USDC"]`
+    </ResponseField>
+    
+    <ResponseField name="facilitator" type="string">
+      x402 facilitator URL
+    </ResponseField>
+    
+    <ResponseField name="deferred" type="boolean" required>
+      Whether deferred payment is supported (currently always `false`)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="docs_url" type="string">
+  URL to service documentation
+</ResponseField>
+
+<ResponseField name="support_email" type="string">
+  Support contact email address
+</ResponseField>
+
+## Example Request
+
+```bash
+curl https://api.example.com/.well-known/agentdoor.json
+```
+
+## Example Response
+
+```json
+{
+  "agentdoor_version": "1.0",
+  "service_name": "Weather API",
+  "service_description": "Real-time weather data and forecasts",
+  "registration_endpoint": "/agentdoor/register",
+  "auth_endpoint": "/agentdoor/auth",
+  "scopes_available": [
+    {
+      "id": "weather.read",
+      "description": "Read current weather conditions",
+      "price": "$0.001/req",
+      "rate_limit": "1000/hour"
+    },
+    {
+      "id": "forecast.read",
+      "description": "Access 7-day weather forecasts",
+      "price": "$0.005/req",
+      "rate_limit": "500/hour"
+    }
+  ],
+  "auth_methods": [
+    "ed25519-challenge",
+    "jwt"
+  ],
+  "rate_limits": {
+    "registration": "10/1h",
+    "default": "1000/1h"
+  },
+  "companion_protocols": {
+    "a2a_agent_card": "/.well-known/agent-card.json"
+  },
+  "docs_url": "https://docs.example.com",
+  "support_email": "support@example.com"
+}
+```
+
+## Caching
+
+The discovery document is cacheable for up to 1 hour (`max-age=3600`). Agents should cache this document and only refetch when:
+
+- The cache expires
+- They receive a `404` or error when attempting to use cached endpoint paths
+- They need to check for updated scope or pricing information
+
+## Use Cases
+
+1. **Initial Discovery**: Agents fetch this document before registration to understand available scopes and pricing
+2. **Capability Check**: Agents verify which authentication methods are supported
+3. **Rate Limit Planning**: Agents review rate limits to plan request patterns
+4. **Companion Protocols**: Agents discover links to A2A agent cards or MCP servers
+5. **Payment Setup**: Agents learn payment requirements and supported networks

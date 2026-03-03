@@ -1,0 +1,630 @@
+---
+title: Agent Examples
+description: Complete examples of agents built with the AgentDoor SDK
+---
+
+These examples demonstrate how to build agents using the AgentDoor SDK in both TypeScript and Python. All examples are drawn from the official AgentDoor repository.
+
+## Basic Weather Agent
+
+A simple agent that connects to a weather API, makes authenticated requests, and handles multiple services.
+
+<CodeGroup>
+```typescript TypeScript
+import { AgentDoor } from "@agentdoor/sdk";
+
+async function main() {
+  // Initialize the agent with a keypair.
+  // If no keyPath is provided, an ephemeral keypair is generated.
+  // For persistent agents, point keyPath to a file — the SDK will
+  // auto-generate keys on first run and reuse them on subsequent runs.
+  const agent = new AgentDoor({
+    keyPath: "./agent-keys.json",
+  });
+
+  // Connect to a weather API
+  // agent.connect() performs the full discovery -> register -> verify
+  // flow in a single call. If credentials are cached from a previous
+  // run, registration is skipped entirely.
+  const weatherApi = await agent.connect("http://localhost:3000");
+
+  console.log("Connected to Weather API");
+  console.log("  Agent ID:", weatherApi.agentId);
+  console.log("  Scopes:", weatherApi.scopes);
+  console.log();
+
+  // Make authenticated requests using the session object.
+  // The SDK automatically attaches the Authorization header.
+  const weather = await weatherApi.get("/api/weather", {
+    params: { city: "san-francisco" },
+  });
+  console.log("Current weather in San Francisco:");
+  console.log(JSON.stringify(weather.data, null, 2));
+  console.log();
+
+  // Request a forecast — the SDK handles auth on every request.
+  const forecast = await weatherApi.get("/api/forecast", {
+    params: { city: "austin", days: "5" },
+  });
+  console.log("5-day forecast for Austin:");
+  console.log(JSON.stringify(forecast.data, null, 2));
+}
+
+main().catch((error) => {
+  console.error("Agent error:", error.message);
+  process.exit(1);
+});
+```
+
+```python Python
+import asyncio
+from agentdoor import Agent, AgentConfig, FileCredentialStore
+
+async def main():
+    # Configure the agent with persistent credentials
+    config = AgentConfig(
+        agent_name="weather-bot",
+        credential_store=FileCredentialStore("./credentials.json"),
+        http_timeout=60.0
+    )
+    
+    agent = Agent(config=config)
+    
+    try:
+        # Connect to the service
+        await agent.connect("http://localhost:3000")
+        print(f"Connected to {agent.discovery.service_name}")
+        
+        # Register with requested scopes
+        credential = await agent.register(
+            scopes=["weather:read", "weather:forecast"]
+        )
+        print(f"Registered as {credential.agent_id}")
+        print(f"Granted scopes: {credential.scopes}")
+        print()
+        
+        # Get current weather
+        response = await agent.request(
+            "GET",
+            "/api/weather",
+            params={"city": "san-francisco"}
+        )
+        weather = response.json()
+        print(f"Current weather in San Francisco:")
+        print(f"  Temperature: {weather['temp']}°F")
+        print(f"  Condition: {weather['condition']}")
+        print()
+        
+        # Get forecast
+        response = await agent.request(
+            "GET",
+            "/api/forecast",
+            params={"city": "austin", "days": "5"}
+        )
+        forecast = response.json()
+        print(f"5-day forecast for Austin:")
+        for day in forecast["days"]:
+            print(f"  {day['date']}: {day['high']}°F / {day['low']}°F")
+    
+    finally:
+        await agent.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+</CodeGroup>
+
+**Key Concepts:**
+
+- **Persistent keypairs** — The agent's identity is stored in `agent-keys.json` and reused across runs
+- **Automatic discovery** — The SDK fetches service capabilities from `/.well-known/agentdoor.json`
+- **Credential caching** — After the first registration, subsequent runs skip the registration flow
+- **Session-based requests** — The `Session` object handles authorization headers and token refresh
+
+## Multi-Service Agent
+
+Connect to multiple AgentDoor-enabled services with a single agent identity.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+async function main() {
+  // One agent, multiple services
+  const agent = new AgentDoor({
+    keyPath: "./agent-keys.json",
+    metadata: {
+      name: "multi-service-bot",
+      version: "1.0.0"
+    }
+  });
+
+  // Connect to a weather API
+  const weatherApi = await agent.connect("https://weather-api.com");
+  console.log("Connected to Weather API as", weatherApi.agentId);
+
+  // Connect to a stock API (separate credentials)
+  const stockApi = await agent.connect("https://stock-api.com");
+  console.log("Connected to Stock API as", stockApi.agentId);
+
+  // Make requests to both services
+  const weather = await weatherApi.get("/forecast", {
+    params: { city: "san-francisco" }
+  });
+
+  const stocks = await stockApi.get("/quote", {
+    params: { symbol: "AAPL" }
+  });
+
+  console.log("Weather:", weather.data);
+  console.log("Stocks:", stocks.data);
+}
+
+main();
+```
+
+**Key Concepts:**
+
+- Each service gets its own credentials (different `agent_id`, `api_key`, `token`)
+- The agent's Ed25519 keypair is shared across all services
+- Credentials are cached separately per service base URL
+
+## Paid Requests with x402
+
+Make paid API requests using on-chain wallets.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+async function main() {
+  // Configure the agent with an x402 wallet
+  const agent = new AgentDoor({
+    keyPath: "./agent-keys.json",
+    x402Wallet: {
+      address: "0x1234567890abcdef1234567890abcdef12345678",
+      network: "base",
+      currency: "USDC",
+      maxAmountPerRequest: "1.00"  // Max $1 USDC per request
+    }
+  });
+
+  const premiumApi = await agent.connect("https://premium-api.com");
+
+  // Make a free request (no payment header)
+  const freeData = await premiumApi.get("/free/data");
+  console.log("Free data:", freeData.data);
+
+  // Make a paid request (x402 payment header attached)
+  const paidData = await premiumApi.get("/premium/data", {
+    x402: true  // Attach X-PAYMENT header
+  });
+  console.log("Premium data:", paidData.data);
+
+  // The service will deduct USDC from the wallet and grant access
+}
+
+main();
+```
+
+**Flow:**
+
+<Steps>
+  <Step title="Configure Wallet">
+    Provide your wallet address, network, and currency to the AgentDoor constructor
+  </Step>
+  <Step title="Connect to Service">
+    The service's discovery document includes payment information (networks, currencies, facilitator)
+  </Step>
+  <Step title="Make Paid Request">
+    Pass `x402: true` in request options to attach the X-PAYMENT header
+  </Step>
+  <Step title="Service Validates Payment">
+    The service checks the payment header, verifies the wallet signature, and deducts USDC
+  </Step>
+  <Step title="Response Returned">
+    If payment succeeds, the service returns the requested data
+  </Step>
+</Steps>
+
+**Payment Header Format:**
+
+The SDK automatically builds the X-PAYMENT header:
+
+```json
+{
+  "version": "2.0",
+  "from": "0x1234567890abcdef1234567890abcdef12345678",
+  "network": "base",
+  "currency": "USDC",
+  "timestamp": "2025-03-03T23:30:00Z",
+  "resource": "/premium/data",
+  "method": "GET",
+  "maxAmount": "1.00"
+}
+```
+
+This payload is base64-encoded and sent in the `X-PAYMENT` header.
+
+## LangChain Integration
+
+Wrap AgentDoor sessions as LangChain tools so LLM agents can autonomously discover and call external APIs.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+import { DynamicStructuredTool } from "@langchain/core/tools";
+import { ChatOpenAI } from "@langchain/openai";
+import { AgentExecutor, createOpenAIFunctionsAgent } from "langchain/agents";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { z } from "zod";
+
+async function main() {
+  // Step 1: Connect to AgentDoor-enabled services
+  const agent = new AgentDoor({
+    keyPath: "./agent-keys.json",
+    metadata: {
+      framework: "langchain",
+      version: "0.3.0",
+      name: "weather-research-agent",
+    },
+  });
+
+  const weatherSession = await agent.connect("http://localhost:3000");
+  console.log(`Connected to Weather API as agent ${weatherSession.agentId}`);
+
+  // Step 2: Wrap AgentDoor sessions as LangChain tools
+  const getWeatherTool = new DynamicStructuredTool({
+    name: "get_current_weather",
+    description:
+      "Get the current weather for a city. Returns temperature, condition, and humidity.",
+    schema: z.object({
+      city: z
+        .string()
+        .describe(
+          "The city to get weather for, using kebab-case (e.g. san-francisco, new-york)"
+        ),
+    }),
+    func: async ({ city }) => {
+      try {
+        const response = await weatherSession.get("/api/weather", {
+          params: { city },
+        });
+        return JSON.stringify(response.data);
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return JSON.stringify({ error: message });
+      }
+    },
+  });
+
+  const getForecastTool = new DynamicStructuredTool({
+    name: "get_weather_forecast",
+    description:
+      "Get a multi-day weather forecast for a city. Returns daily high/low temperatures and conditions.",
+    schema: z.object({
+      city: z
+        .string()
+        .describe(
+          "The city to get a forecast for, using kebab-case (e.g. san-francisco, new-york)"
+        ),
+      days: z
+        .number()
+        .min(1)
+        .max(14)
+        .default(7)
+        .describe("Number of days to forecast (1-14)"),
+    }),
+    func: async ({ city, days }) => {
+      try {
+        const response = await weatherSession.get("/api/forecast", {
+          params: { city, days: String(days) },
+        });
+        return JSON.stringify(response.data);
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+        return JSON.stringify({ error: message });
+      }
+    },
+  });
+
+  // Step 3: Create a LangChain agent with the AgentDoor tools
+  const llm = new ChatOpenAI({
+    modelName: "gpt-4o",
+    temperature: 0,
+  });
+
+  const tools = [getWeatherTool, getForecastTool];
+
+  const prompt = ChatPromptTemplate.fromMessages([
+    [
+      "system",
+      `You are a helpful weather research assistant. You have access to a
+real-time weather API through AgentDoor. Use the available tools to answer
+questions about current weather and forecasts. Always provide specific data
+from the API rather than making assumptions.`,
+    ],
+    ["human", "{input}"],
+    ["placeholder", "{agent_scratchpad}"],
+  ]);
+
+  const langchainAgent = await createOpenAIFunctionsAgent({
+    llm,
+    tools,
+    prompt,
+  });
+
+  const executor = new AgentExecutor({
+    agent: langchainAgent,
+    tools,
+    verbose: true,
+  });
+
+  // Step 4: Run the agent with a natural language query
+  console.log("\n--- Running LangChain Agent ---\n");
+
+  const result = await executor.invoke({
+    input:
+      "What's the weather like in San Francisco right now? Also, give me a 5-day forecast for Austin.",
+  });
+
+  console.log("\n--- Agent Response ---\n");
+  console.log(result.output);
+}
+
+main().catch((error) => {
+  console.error("Agent error:", error.message);
+  process.exit(1);
+});
+```
+
+**Key Concepts:**
+
+- **Tool Wrapping** — Each AgentDoor session method becomes a LangChain `DynamicStructuredTool`
+- **Schema Validation** — Zod schemas ensure the LLM provides valid parameters
+- **Error Handling** — Tools return error messages as JSON so the LLM can retry or inform the user
+- **Multi-Step Reasoning** — The LLM agent decides which tools to call and in what order
+
+**Example Output:**
+
+```
+--- Running LangChain Agent ---
+
+> Entering new AgentExecutor chain...
+
+Invoking: `get_current_weather` with `{'city': 'san-francisco'}`
+
+{"city":"san-francisco","temp":62,"condition":"Partly Cloudy","humidity":65}
+
+Invoking: `get_weather_forecast` with `{'city': 'austin', 'days': 5}`
+
+{"city":"austin","days":[{"date":"2025-03-04","high":78,"low":55},{"date":"2025-03-05","high":81,"low":58}...]}
+
+--- Agent Response ---
+
+In San Francisco, it's currently 62°F with partly cloudy skies and 65% humidity.
+
+Here's the 5-day forecast for Austin:
+- March 4: High 78°F, Low 55°F
+- March 5: High 81°F, Low 58°F
+- March 6: High 79°F, Low 56°F
+- March 7: High 77°F, Low 54°F
+- March 8: High 80°F, Low 57°F
+```
+
+## Ephemeral Agent
+
+Create a temporary agent that doesn't cache credentials or persist its keypair.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+async function main() {
+  const agent = new AgentDoor({
+    ephemeral: true  // Fresh keypair every run, no credential caching
+  });
+
+  const session = await agent.connect("https://api.example.com");
+  console.log("Ephemeral agent ID:", session.agentId);
+
+  const data = await session.get("/data");
+  console.log(data.data);
+
+  // Credentials are discarded after this run
+}
+
+main();
+```
+
+**Use Cases:**
+
+- Testing and development
+- Serverless functions with short lifecycles
+- One-off scripts that don't need persistent identity
+- CI/CD pipelines
+
+## Error Handling
+
+Handle common error scenarios gracefully.
+
+<Tabs>
+  <Tab title="TypeScript">
+```typescript
+import { AgentDoor, AgentDoorError, SessionError } from "@agentdoor/sdk";
+
+async function main() {
+  const agent = new AgentDoor();
+
+  try {
+    const session = await agent.connect("https://api.example.com");
+    const data = await session.get("/protected-resource");
+    console.log(data.data);
+  } catch (error) {
+    if (error instanceof AgentDoorError) {
+      // Discovery, registration, or auth error
+      console.error(`AgentDoor error [${error.code}]:`, error.message);
+
+      if (error.code === "RATE_LIMITED") {
+        console.log("Rate limited. Retrying in 60 seconds...");
+        await new Promise(resolve => setTimeout(resolve, 60000));
+        // Retry logic here
+      } else if (error.code === "NO_MATCHING_SCOPES") {
+        console.log("Requested scopes not available. Check the service's discovery document.");
+      }
+    } else if (error instanceof SessionError) {
+      // Request-level error
+      console.error(`HTTP ${error.statusCode}:`, error.message);
+
+      if (error.statusCode === 403) {
+        console.log("Forbidden. Check your scopes.");
+      } else if (error.statusCode === 404) {
+        console.log("Resource not found.");
+      }
+    } else {
+      // Unknown error
+      console.error("Unknown error:", error);
+    }
+  }
+}
+
+main();
+```
+  </Tab>
+  <Tab title="Python">
+```python
+import asyncio
+import httpx
+from agentdoor import Agent, AgentConfig
+
+async def main():
+    agent = Agent(config=AgentConfig(agent_name="error-handler"))
+
+    try:
+        await agent.connect("https://api.example.com")
+        await agent.register()
+        response = await agent.request("GET", "/protected-resource")
+        print(response.json())
+    except RuntimeError as e:
+        # SDK-level error (wrong method call order)
+        print(f"Runtime error: {e}")
+    except httpx.HTTPStatusError as e:
+        # HTTP error from the service
+        print(f"HTTP {e.response.status_code}: {e.response.text}")
+        
+        if e.response.status_code == 429:
+            print("Rate limited. Retrying in 60 seconds...")
+            await asyncio.sleep(60)
+            # Retry logic here
+        elif e.response.status_code == 403:
+            print("Forbidden. Check your scopes.")
+    except httpx.TimeoutException:
+        print("Request timed out")
+    except Exception as e:
+        print(f"Unknown error: {e}")
+    finally:
+        await agent.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+  </Tab>
+</Tabs>
+
+**Common Error Codes (TypeScript):**
+
+| Code | Description | Handling |
+|------|-------------|----------|
+| `NO_MATCHING_SCOPES` | Requested scopes not available | Request different scopes or check discovery doc |
+| `RATE_LIMITED` | Too many requests (HTTP 429) | Implement exponential backoff |
+| `CHALLENGE_EXPIRED` | Challenge nonce expired (HTTP 410) | Restart registration flow |
+| `ALREADY_REGISTERED` | Agent already registered (HTTP 409) | Use cached credentials or clear cache |
+| `TIMEOUT` | Request timed out | Increase `timeoutMs` or retry |
+| `NETWORK_ERROR` | Network failure | Check connectivity and retry |
+
+## Custom Fetch Function
+
+Inject a custom fetch implementation for logging, retries, or testing.
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+const agent = new AgentDoor({
+  fetchFn: async (url, options) => {
+    console.log(`[FETCH] ${options?.method || 'GET'} ${url}`);
+    const startTime = Date.now();
+    
+    try {
+      const response = await globalThis.fetch(url, options);
+      const duration = Date.now() - startTime;
+      console.log(`[FETCH] ${response.status} ${url} (${duration}ms)`);
+      return response;
+    } catch (error) {
+      console.error(`[FETCH ERROR] ${url}:`, error);
+      throw error;
+    }
+  }
+});
+
+const session = await agent.connect("https://api.example.com");
+// Logs:
+// [FETCH] GET https://api.example.com/.well-known/agentdoor.json
+// [FETCH] 200 https://api.example.com/.well-known/agentdoor.json (45ms)
+```
+
+**Use Cases:**
+
+- Request/response logging
+- Custom retry logic
+- Proxying requests through a VPN or corporate proxy
+- Testing with mock responses
+
+## Credential Management
+
+Manually inspect and clear cached credentials.
+
+```typescript
+import { CredentialStore, DEFAULT_CREDENTIALS_PATH } from "@agentdoor/sdk";
+
+const store = new CredentialStore(DEFAULT_CREDENTIALS_PATH);
+
+// List all services with cached credentials
+const services = store.listServices();
+console.log("Cached services:", services);
+
+// Get credentials for a specific service
+const creds = store.get("https://api.example.com");
+if (creds) {
+  console.log("Agent ID:", creds.agentId);
+  console.log("Scopes:", creds.scopesGranted);
+  console.log("Token expires at:", creds.tokenExpiresAt);
+}
+
+// Check if credentials are still valid
+if (store.hasValidCredentials("https://api.example.com")) {
+  console.log("Credentials are valid!");
+} else {
+  console.log("Credentials expired or missing");
+}
+
+// Clear credentials for a specific service
+store.remove("https://api.example.com");
+
+// Clear all credentials
+store.clear();
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK Reference" icon="book" href="/agent/typescript-sdk">
+    Complete API documentation for the TypeScript SDK
+  </Card>
+  <Card title="Python SDK Reference" icon="book" href="/agent/python-sdk">
+    Complete API documentation for the Python SDK
+  </Card>
+  <Card title="Service Provider Guide" icon="server" href="/essentials/introduction">
+    Learn how to make your API AgentDoor-compatible
+  </Card>
+  <Card title="x402 Payments" icon="credit-card" href="/essentials/payments">
+    Deep dive into paid API access with x402
+  </Card>
+</CardGroup>

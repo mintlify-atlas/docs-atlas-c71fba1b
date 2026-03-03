@@ -1,0 +1,251 @@
+---
+title: Deployment Overview
+description: Deploy AgentDoor to production with Railway, Cloudflare Workers, or Vercel
+---
+
+AgentDoor can be deployed to multiple platforms depending on your application requirements. Each platform offers different tradeoffs for storage, performance, and scalability.
+
+## Deployment Platforms
+
+AgentDoor provides official templates for three major platforms:
+
+<CardGroup cols={3}>
+  <Card title="Railway" icon="train" href="/deployment/railway">
+    Full Node.js runtime with Docker support and built-in PostgreSQL
+  </Card>
+  <Card title="Cloudflare Workers" icon="cloud" href="/deployment/cloudflare">
+    Edge computing with global distribution and near-zero cold starts
+  </Card>
+  <Card title="Vercel" icon="triangle" href="/deployment/vercel">
+    Serverless Next.js deployment with automatic scaling
+  </Card>
+</CardGroup>
+
+## Platform Comparison
+
+| Feature | Railway | Cloudflare Workers | Vercel |
+|---------|---------|-------------------|--------|
+| **Runtime** | Node.js (Docker) | V8 Isolates | Node.js (Serverless) |
+| **Cold Starts** | ~1-2s | &lt;10ms | ~200-500ms |
+| **Execution Time** | Unlimited | 30s (free), 15m (paid) | 10s (hobby), 60s (pro) |
+| **Storage** | PostgreSQL, SQLite | KV, D1, Durable Objects | External (PostgreSQL, etc.) |
+| **Best For** | Traditional apps, databases | High-traffic APIs, global apps | Next.js apps, Jamstack |
+| **Pricing** | $5/month + usage | Free tier generous | Free tier available |
+
+## Storage Options
+
+AgentDoor requires persistent storage to manage agent registrations, API keys, and authentication state. Choose a storage backend based on your platform:
+
+### Memory Store (Development Only)
+
+```typescript
+import { MemoryStore } from '@agentdoor/core/storage/memory';
+
+const store = new MemoryStore();
+```
+
+<Warning>
+  Memory store loses all data on restart. Never use in production.
+</Warning>
+
+### SQLite (Railway, Local)
+
+```typescript
+import { SQLiteStore } from '@agentdoor/core/advanced/storage';
+
+const store = new SQLiteStore({
+  path: './data/agentdoor.db'
+});
+```
+
+Best for single-instance deployments on Railway with persistent volumes.
+
+### PostgreSQL (Railway, External)
+
+```typescript
+import { PostgresStore } from '@agentdoor/core/storage/postgres';
+
+const store = new PostgresStore({
+  connectionString: process.env.DATABASE_URL
+});
+```
+
+Best for production deployments requiring high availability and scalability.
+
+### Cloudflare D1 (Cloudflare Workers)
+
+```typescript
+import { D1Store } from '@agentdoor/cloudflare';
+
+const store = new D1Store({
+  database: env.DB // Cloudflare D1 binding
+});
+```
+
+Serverless SQLite for Cloudflare Workers with automatic replication.
+
+## Environment Variables
+
+All deployment platforms require these core environment variables:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `X402_WALLET` | Your wallet address for receiving x402 micropayments (USDC on Base) | Yes |
+| `DATABASE_URL` | PostgreSQL connection string (if using PostgreSQL) | Conditional |
+| `PORT` | Server port (auto-set by most platforms) | No |
+
+## Security Considerations
+
+### API Keys and Secrets
+
+Agent API keys are hashed using SHA-256 before storage. Never store plaintext API keys.
+
+```typescript
+import { createHash } from 'crypto';
+
+const apiKeyHash = createHash('sha256')
+  .update(apiKey)
+  .digest('hex');
+```
+
+### Environment Variable Management
+
+<Tabs>
+  <Tab title="Railway">
+    Set variables in Railway dashboard under **Variables** tab or via `railway.json`:
+    
+    ```json
+    {
+      "deploy": {
+        "environmentVariables": {
+          "X402_WALLET": "${X402_WALLET}"
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Cloudflare">
+    Set variables in `wrangler.toml` for non-sensitive values:
+    
+    ```toml
+    [vars]
+    X402_WALLET = "0xYourAddress"
+    ```
+    
+    Use secrets for sensitive values:
+    
+    ```bash
+    wrangler secret put DATABASE_URL
+    ```
+  </Tab>
+  <Tab title="Vercel">
+    Set variables in Vercel dashboard under **Settings** → **Environment Variables** or via `.env.local` for development:
+    
+    ```bash
+    vercel env add X402_WALLET
+    ```
+  </Tab>
+</Tabs>
+
+## Edge vs Serverless vs Traditional
+
+### Edge Computing (Cloudflare Workers)
+
+**Pros:**
+- Globally distributed (300+ locations)
+- Near-zero cold starts (&lt;10ms)
+- Pay-per-request pricing
+- Built-in DDoS protection
+
+**Cons:**
+- Limited execution time (30s-15m)
+- No native file system access
+- Requires edge-compatible storage (D1, KV)
+
+**Use When:**
+- You need global low-latency access
+- High traffic with unpredictable spikes
+- Cost optimization for sporadic usage
+
+### Serverless (Vercel)
+
+**Pros:**
+- Automatic scaling
+- Zero infrastructure management
+- Excellent Next.js integration
+- Free tier available
+
+**Cons:**
+- Cold starts (~200-500ms)
+- Limited execution time (10-60s)
+- Requires external database
+
+**Use When:**
+- Building a Next.js application
+- Need automatic scaling
+- Want minimal DevOps overhead
+
+### Traditional (Railway)
+
+**Pros:**
+- Full Node.js runtime
+- Unlimited execution time
+- Built-in PostgreSQL
+- WebSocket support
+
+**Cons:**
+- Manual scaling required
+- Higher baseline cost
+- Slower cold starts
+
+**Use When:**
+- Need long-running processes
+- Require WebSocket connections
+- Want traditional database access
+
+## Monitoring and Observability
+
+### Request Logging
+
+AgentDoor automatically tracks agent requests and authentication attempts. Access logs via your platform's logging system:
+
+```typescript
+import { agentDoor } from '@agentdoor/express';
+
+app.use('/api', agentDoor({
+  // ... config
+  onRequest: (agent, request) => {
+    console.log(`Agent ${agent.id} requested ${request.url}`);
+  }
+}));
+```
+
+### Health Checks
+
+Implement health check endpoints for monitoring:
+
+```typescript
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+```
+
+## Next Steps
+
+Choose your deployment platform:
+
+<CardGroup cols={3}>
+  <Card title="Deploy to Railway" icon="train" href="/deployment/railway">
+    Traditional Node.js deployment with PostgreSQL
+  </Card>
+  <Card title="Deploy to Cloudflare" icon="cloud" href="/deployment/cloudflare">
+    Edge computing with global distribution
+  </Card>
+  <Card title="Deploy to Vercel" icon="triangle" href="/deployment/vercel">
+    Serverless Next.js deployment
+  </Card>
+</CardGroup>

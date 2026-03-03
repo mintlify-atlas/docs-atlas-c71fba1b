@@ -1,0 +1,409 @@
+---
+title: Next.js
+description: Add AgentDoor to your Next.js application
+---
+
+Integrate AgentDoor into your Next.js app using Edge middleware and App Router route handlers. The `@agentdoor/next` adapter provides both middleware-based and route-based approaches.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/next @agentdoor/core
+```
+
+```bash pnpm
+pnpm add @agentdoor/next @agentdoor/core
+```
+
+```bash yarn
+yarn add @agentdoor/next @agentdoor/core
+```
+
+</CodeGroup>
+
+## Quick Start (Edge Middleware)
+
+<Steps>
+
+<Step title="Create middleware file">
+
+Create `middleware.ts` in your project root:
+
+```typescript middleware.ts
+import { createAgentDoorMiddleware } from "@agentdoor/next";
+
+export default createAgentDoorMiddleware({
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "data.write",
+      description: "Write application data",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+});
+
+export const config = {
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+</Step>
+
+<Step title="Access agent context in routes">
+
+In your API routes, extract agent context from headers:
+
+```typescript app/api/data/route.ts
+import { getAgentContext } from "@agentdoor/next";
+import { headers } from "next/headers";
+
+export async function GET() {
+  const h = await headers();
+  const agent = getAgentContext(h);
+  
+  if (agent) {
+    return Response.json({
+      message: `Hello agent ${agent.id}`,
+      scopes: agent.scopes,
+    });
+  }
+  
+  return Response.json({ message: "Hello human" });
+}
+```
+
+</Step>
+
+</Steps>
+
+## Alternative: App Router Route Handlers
+
+Instead of Edge middleware, you can use explicit route handlers:
+
+<Steps>
+
+<Step title="Create discovery route">
+
+```typescript app/.well-known/agentdoor.json/route.ts
+import { createDiscoveryHandler } from "@agentdoor/next";
+
+const config = {
+  scopes: [
+    { id: "data.read", description: "Read data" },
+    { id: "data.write", description: "Write data" },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+};
+
+export const GET = createDiscoveryHandler(config);
+```
+
+</Step>
+
+<Step title="Create registration routes">
+
+```typescript app/agentdoor/register/route.ts
+import { createRegisterHandler } from "@agentdoor/next";
+import config from "../config";
+
+export const POST = createRegisterHandler(config);
+```
+
+```typescript app/agentdoor/register/verify/route.ts
+import { createVerifyHandler } from "@agentdoor/next";
+import config from "../../config";
+
+export const POST = createVerifyHandler(config);
+```
+
+</Step>
+
+<Step title="Create auth route">
+
+```typescript app/agentdoor/auth/route.ts
+import { createAuthHandler } from "@agentdoor/next";
+
+export const POST = createAuthHandler();
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full Next.js SaaS example with agent authentication:
+
+```typescript middleware.ts
+import { createAgentDoorMiddleware } from "@agentdoor/next";
+
+export default createAgentDoorMiddleware({
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "data.write",
+      description: "Write application data",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET!,
+  },
+});
+
+export const config = {
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+```typescript app/api/data/route.ts
+import { NextRequest, NextResponse } from "next/server";
+
+const sampleData = [
+  { id: 1, name: "Project Alpha", status: "active", revenue: 12400 },
+  { id: 2, name: "Project Beta", status: "active", revenue: 8900 },
+];
+
+export async function GET(req: NextRequest) {
+  const isAgent = req.headers.get("x-agentdoor-authenticated") === "true";
+  const agentId = req.headers.get("x-agentdoor-agent-id");
+  
+  const response = {
+    data: sampleData,
+    meta: {
+      total: sampleData.length,
+      timestamp: new Date().toISOString(),
+      caller: isAgent ? `agent:${agentId}` : "human",
+    },
+  };
+  
+  return NextResponse.json(response);
+}
+
+export async function POST(req: NextRequest) {
+  const isAgent = req.headers.get("x-agentdoor-authenticated") === "true";
+  const agentId = req.headers.get("x-agentdoor-agent-id");
+  
+  const body = await req.json();
+  
+  if (!body.name) {
+    return NextResponse.json(
+      { error: "Missing required field: name" },
+      { status: 400 }
+    );
+  }
+  
+  const newItem = {
+    id: sampleData.length + 1,
+    ...body,
+    createdBy: isAgent ? `agent:${agentId}` : "human",
+  };
+  
+  return NextResponse.json(newItem, { status: 201 });
+}
+```
+
+## How It Works
+
+The Next.js Edge middleware:
+
+1. **Serves discovery**: `GET /.well-known/agentdoor.json`
+2. **Handles registration**: 
+   - `POST /agentdoor/register` (step 1)
+   - `POST /agentdoor/register/verify` (step 2)
+3. **Handles auth**: `POST /agentdoor/auth`
+4. **Validates requests**: Checks `Authorization` headers on protected routes
+5. **Injects headers**: Sets `x-agentdoor-*` headers for downstream handlers
+
+## Advanced Configuration
+
+### Protected Paths
+
+Customize which paths require agent authentication:
+
+```typescript
+export default createAgentDoorMiddleware({
+  scopes: [/* ... */],
+  protectedPaths: ["/api/protected", "/api/admin"], // Only these paths require auth
+  passthrough: false, // Block unauthenticated requests (default)
+});
+```
+
+### Passthrough Mode
+
+Allow unauthenticated requests to pass through:
+
+```typescript
+export default createAgentDoorMiddleware({
+  scopes: [/* ... */],
+  passthrough: true, // Don't block unauthenticated requests
+});
+
+// In your route handler:
+export async function GET(req: NextRequest) {
+  const isAgent = req.headers.get("x-agentdoor-authenticated") === "true";
+  
+  if (!isAgent) {
+    return NextResponse.json({ error: "Agent required" }, { status: 401 });
+  }
+  
+  // Handle agent request
+}
+```
+
+### Custom Storage
+
+Use persistent storage instead of in-memory:
+
+```typescript
+import { createAgentDoorMiddleware } from "@agentdoor/next";
+import { SQLiteStore } from "@agentdoor/core";
+
+const store = new SQLiteStore("./agents.db");
+
+export default createAgentDoorMiddleware({
+  scopes: [/* ... */],
+  store,
+});
+```
+
+### Webhooks & P1 Features
+
+```typescript
+export default createAgentDoorMiddleware({
+  scopes: [/* ... */],
+  
+  webhooks: {
+    endpoints: [{ url: "https://hooks.example.com/agentdoor" }],
+    secret: process.env.WEBHOOK_SECRET,
+  },
+  
+  reputation: {
+    gates: [
+      { minReputation: 30, action: "block" },
+      { minReputation: 50, action: "warn" },
+    ],
+  },
+  
+  spendingCaps: {
+    defaultCaps: [
+      { amount: 10, currency: "USDC", period: "daily", type: "hard" },
+    ],
+  },
+});
+```
+
+## Request Headers
+
+AgentDoor sets these headers on authenticated requests:
+
+- `x-agentdoor-authenticated`: `"true"` or `"false"`
+- `x-agentdoor-agent-id`: Agent ID
+- `x-agentdoor-agent`: JSON-encoded agent context
+- `x-agentdoor-reputation-warning`: Present if reputation is below threshold
+
+## Helper Functions
+
+### `getAgentContext(headers)`
+
+Extract agent context from request headers:
+
+```typescript
+import { getAgentContext } from "@agentdoor/next";
+import { headers } from "next/headers";
+
+export async function GET() {
+  const h = await headers();
+  const agent = getAgentContext(h);
+  
+  if (agent) {
+    console.log(agent.id, agent.scopes, agent.metadata);
+  }
+}
+```
+
+### `buildDiscoveryDocument(config)`
+
+Build a discovery document programmatically:
+
+```typescript
+import { buildDiscoveryDocument } from "@agentdoor/next";
+
+const doc = buildDiscoveryDocument({
+  scopes: [{ id: "data.read", description: "Read data" }],
+  x402: { network: "base", currency: "USDC", paymentAddress: "0x..." },
+});
+```
+
+## API Reference
+
+### `createAgentDoorMiddleware(config)`
+
+**Options:**
+
+- `scopes` (required): Scope definitions
+- `protectedPaths`: Path prefixes requiring auth (default: `["/api/"]`)
+- `passthrough`: Allow unauthenticated requests (default: `false`)
+- `store`: Custom agent store
+- `jwt`: JWT config (`{ secret, expiresIn }`)
+- `webhooks`, `reputation`, `spendingCaps`: P1 features
+
+**Returns:** Next.js Edge middleware function
+
+### Route Handler Factories
+
+- `createDiscoveryHandler(config)`: Discovery endpoint
+- `createRegisterHandler(config)`: Registration step 1
+- `createVerifyHandler(config)`: Registration step 2
+- `createAuthHandler()`: Auth endpoint
+- `createRouteHandlers(config)`: All handlers combined
+
+<Warning>
+Edge middleware runs in the Edge Runtime, which has [limitations](https://nextjs.org/docs/app/api-reference/edge). Avoid Node.js-specific APIs.
+</Warning>
+
+## TypeScript Support
+
+```typescript
+import type {
+  AgentDoorNextConfig,
+  RouteHandlers,
+  AgentContext,
+} from "@agentdoor/next";
+```
+
+## Next Steps
+
+- [Configure Webhooks](/advanced/webhooks)
+- [Set up Reputation Gates](/advanced/rate-limiting)
+- [Deploy to Vercel](/deployment/vercel)

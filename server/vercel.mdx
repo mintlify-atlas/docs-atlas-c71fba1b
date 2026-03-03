@@ -1,0 +1,427 @@
+---
+title: Vercel Edge Middleware
+description: Deploy AgentDoor on Vercel with Edge Middleware
+---
+
+Deploy AgentDoor on Vercel using Edge Middleware. The `@agentdoor/vercel` adapter provides a lightweight edge-compatible middleware using standard Web APIs.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @agentdoor/vercel @agentdoor/core
+```
+
+```bash pnpm
+pnpm add @agentdoor/vercel @agentdoor/core
+```
+
+```bash yarn
+yarn add @agentdoor/vercel @agentdoor/core
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<Steps>
+
+<Step title="Create middleware file">
+
+Create `middleware.ts` in your project root:
+
+```typescript middleware.ts
+import { createEdgeMiddleware } from "@agentdoor/vercel";
+
+const agentdoor = createEdgeMiddleware({
+  scopes: [
+    {
+      id: "data.read",
+      description: "Read application data",
+      price: "$0.001/req",
+      rateLimit: "1000/hour",
+    },
+    {
+      id: "data.write",
+      description: "Write application data",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "data.read": "$0.001/req",
+    "data.write": "$0.01/req",
+  },
+  rateLimit: { requests: 1000, window: "1h" },
+});
+
+export default async function middleware(request: Request) {
+  const response = await agentdoor(request);
+  
+  // If AgentDoor handled the request, return its response
+  if (response) return response;
+  
+  // Otherwise, continue to origin
+  return null;
+}
+
+export const config = {
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+</Step>
+
+<Step title="Access agent context in routes">
+
+In your API routes, check for agent headers:
+
+```typescript pages/api/data.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const isAgent = req.headers["x-agentdoor-authenticated"] === "true";
+  const agentId = req.headers["x-agentdoor-agent-id"];
+  
+  if (isAgent) {
+    return res.json({
+      message: `Hello agent ${agentId}`,
+      data: "agent-specific data",
+    });
+  }
+  
+  return res.json({ message: "Hello human" });
+}
+```
+
+</Step>
+
+<Step title="Deploy to Vercel">
+
+```bash
+vercel deploy
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full Vercel project with agent authentication:
+
+```typescript middleware.ts
+import { createEdgeMiddleware } from "@agentdoor/vercel";
+
+const agentdoor = createEdgeMiddleware({
+  scopes: [
+    {
+      id: "analytics.read",
+      description: "Read analytics data",
+      price: "$0.002/req",
+      rateLimit: "500/hour",
+    },
+    {
+      id: "analytics.write",
+      description: "Write analytics events",
+      price: "$0.01/req",
+      rateLimit: "100/hour",
+    },
+  ],
+  pricing: {
+    "analytics.read": "$0.002/req",
+    "analytics.write": "$0.01/req",
+  },
+  rateLimit: { requests: 500, window: "1h" },
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET!,
+  },
+});
+
+export default async function middleware(request: Request) {
+  const url = new URL(request.url);
+  
+  // Handle AgentDoor routes
+  if (
+    url.pathname.startsWith("/agentdoor") ||
+    url.pathname.startsWith("/.well-known")
+  ) {
+    return await agentdoor(request);
+  }
+  
+  // Apply auth guard to API routes
+  if (url.pathname.startsWith("/api/")) {
+    const response = await agentdoor(request);
+    if (response) return response;
+  }
+  
+  // Continue to origin
+  return null;
+}
+
+export const config = {
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+```typescript pages/api/analytics.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+
+type AnalyticsEvent = {
+  event: string;
+  timestamp: string;
+  properties: Record<string, any>;
+};
+
+const events: AnalyticsEvent[] = [];
+
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const isAgent = req.headers["x-agentdoor-authenticated"] === "true";
+  const agentId = req.headers["x-agentdoor-agent-id"];
+  
+  if (req.method === "GET") {
+    // Read analytics
+    return res.json({
+      events,
+      total: events.length,
+      caller: isAgent ? `agent:${agentId}` : "human",
+    });
+  }
+  
+  if (req.method === "POST") {
+    // Write analytics event
+    const event: AnalyticsEvent = {
+      ...req.body,
+      timestamp: new Date().toISOString(),
+    };
+    
+    events.push(event);
+    
+    return res.status(201).json({
+      event,
+      createdBy: isAgent ? `agent:${agentId}` : "human",
+    });
+  }
+  
+  return res.status(405).json({ error: "Method not allowed" });
+}
+```
+
+## How It Works
+
+The Vercel Edge middleware:
+
+1. **Runs at the edge**: Low latency worldwide
+2. **Uses Web APIs**: `Request`, `Response`, Web Crypto
+3. **Handles routes**: Discovery, registration, auth
+4. **Validates requests**: Checks `Authorization` headers on protected routes
+5. **Injects headers**: `x-agentdoor-*` headers for downstream handlers
+6. **Returns null**: When the request should continue to the origin
+
+## Advanced Configuration
+
+### Protected Paths
+
+Customize which paths require agent authentication:
+
+```typescript
+const agentdoor = createEdgeMiddleware({
+  scopes: [/* ... */],
+  protectedPaths: ["/api/protected", "/api/admin"], // Only these paths require auth
+  passthrough: false, // Block unauthenticated requests (default)
+});
+```
+
+### Passthrough Mode
+
+Allow unauthenticated requests:
+
+```typescript
+const agentdoor = createEdgeMiddleware({
+  scopes: [/* ... */],
+  passthrough: true, // Don't block unauthenticated requests
+});
+
+export default async function middleware(request: Request) {
+  const response = await agentdoor(request);
+  if (response) return response;
+  
+  const url = new URL(request.url);
+  if (url.pathname.startsWith("/api/protected")) {
+    const isAgent = request.headers.get("x-agentdoor-authenticated") === "true";
+    if (!isAgent) {
+      return Response.json({ error: "Agent required" }, { status: 401 });
+    }
+  }
+  
+  return null;
+}
+```
+
+### Environment Variables
+
+Set environment variables in Vercel dashboard or `.env.local`:
+
+```bash .env.local
+X402_WALLET=0xYourWalletAddress
+```
+
+Access them in middleware:
+
+```typescript
+const agentdoor = createEdgeMiddleware({
+  scopes: [/* ... */],
+  x402: {
+    network: "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_WALLET!,
+  },
+});
+```
+
+## Headers Injected
+
+AgentDoor sets these headers on authenticated requests:
+
+- `x-agentdoor-authenticated`: `"true"` or `"false"`
+- `x-agentdoor-agent-id`: Agent ID
+- `x-agentdoor-agent`: JSON-encoded agent context
+
+Access them in your API routes:
+
+```typescript
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const isAgent = req.headers["x-agentdoor-authenticated"] === "true";
+  const agentId = req.headers["x-agentdoor-agent-id"] as string | undefined;
+  const agentJson = req.headers["x-agentdoor-agent"] as string | undefined;
+  
+  if (agentJson) {
+    const agent = JSON.parse(agentJson);
+    console.log(agent.id, agent.scopes, agent.metadata);
+  }
+}
+```
+
+## Matcher Configuration
+
+The `matcher` config determines which routes the middleware runs on:
+
+```typescript
+export const config = {
+  // Match API routes, well-known paths, and AgentDoor paths
+  matcher: ["/api/:path*", "/.well-known/:path*", "/agentdoor/:path*"],
+};
+```
+
+For more complex matching:
+
+```typescript
+export const config = {
+  matcher: [
+    // Match all API routes
+    "/api/:path*",
+    // Match well-known paths
+    "/.well-known/:path*",
+    // Match AgentDoor paths
+    "/agentdoor/:path*",
+    // Exclude specific paths
+    "!(/_next/static|/_next/image|/favicon.ico)",
+  ],
+};
+```
+
+## API Reference
+
+### `createEdgeMiddleware(config)`
+
+Creates a Vercel Edge middleware function.
+
+**Parameters:**
+
+- `config`: Configuration object
+  - `scopes` (required): Scope definitions
+  - `protectedPaths`: Path prefixes requiring auth (default: `["/api/"]`)
+  - `passthrough`: Allow unauthenticated requests (default: `false`)
+  - `pricing`: Price per scope
+  - `rateLimit`: Default rate limit config
+  - `x402`: X402 payment config
+
+**Returns:** `(request: Request) => Promise<Response | null>`
+
+## Deployment
+
+### Local Development
+
+Run locally with Vercel CLI:
+
+```bash
+vercel dev
+```
+
+Test endpoints:
+
+- Discovery: `http://localhost:3000/.well-known/agentdoor.json`
+- Register: `POST http://localhost:3000/agentdoor/register`
+
+### Production Deployment
+
+```bash
+vercel deploy --prod
+```
+
+### Environment Variables
+
+Set in Vercel dashboard:
+
+1. Go to Project Settings → Environment Variables
+2. Add `X402_WALLET` with your wallet address
+3. Redeploy for changes to take effect
+
+Or use Vercel CLI:
+
+```bash
+vercel env add X402_WALLET production
+```
+
+## TypeScript Support
+
+```typescript
+import type {
+  AgentDoorVercelConfig,
+} from "@agentdoor/vercel";
+
+import type { AgentContext } from "@agentdoor/core";
+```
+
+<Warning>
+Vercel Edge Middleware uses in-memory Maps for storage. State resets on each deployment and region. For production persistence, use a database or KV store.
+</Warning>
+
+## Performance
+
+- **Cold start**: ~10-50ms
+- **Warm request**: &lt;1ms
+- **Edge latency**: &lt;50ms worldwide
+- **Max execution time**: 30 seconds
+
+## Limitations
+
+- No native `node:*` modules
+- No `fs`, `path`, or `crypto` from Node.js
+- State resets on each deployment
+- Limited to 1MB response size
+
+For persistent storage, use:
+
+- Vercel KV (Redis)
+- Vercel Postgres
+- External database (Supabase, PlanetScale, etc.)
+
+## Next Steps
+
+- [Deploy to Vercel](/deployment/vercel)
+- [Use Next.js Adapter](/server/nextjs)
+- [Configure X402 Payments](/concepts/payments)

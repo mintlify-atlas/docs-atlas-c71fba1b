@@ -1,0 +1,413 @@
+---
+title: Auth Provider Companions
+description: Sync agents with Auth0, Clerk, Firebase, and other auth providers
+---
+
+## Overview
+
+Auth provider companions automatically sync AgentDoor agents with your existing user authentication system. This enables unified user management and allows agents to appear in your auth provider's dashboard alongside human users.
+
+## Available Companions
+
+- **Auth0** - `@agentdoor/auth0`
+- **Clerk** - `@agentdoor/clerk`
+- **Firebase Auth** - `@agentdoor/firebase`
+- **NextAuth.js** - `@agentdoor/next-auth`
+
+## Auth0 Companion
+
+Sync agents as M2M clients in Auth0.
+
+### Installation
+
+```bash
+npm install @agentdoor/auth0
+```
+
+### Setup
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+import { Auth0Companion } from "@agentdoor/auth0";
+import { ManagementClient } from "auth0";
+
+const auth0 = new ManagementClient({
+  domain: process.env.AUTH0_DOMAIN!,
+  clientId: process.env.AUTH0_CLIENT_ID!,
+  clientSecret: process.env.AUTH0_CLIENT_SECRET!,
+});
+
+const auth0Companion = new Auth0Companion(
+  {
+    domain: process.env.AUTH0_DOMAIN!,
+    clientId: process.env.AUTH0_CLIENT_ID!,
+    clientSecret: process.env.AUTH0_CLIENT_SECRET!,
+    audience: process.env.AUTH0_API_AUDIENCE,
+    connection: "Username-Password-Authentication",
+    agentMetadataKey: "agentdoor"  // Key in app_metadata
+  },
+  auth0
+);
+
+const door = createAgentDoor({
+  scopes: [...],
+  
+  // Sync agents to Auth0 on registration
+  onAgentRegistered: async (agent) => {
+    const result = await auth0Companion.onAgentRegistered(agent);
+    console.log(`Agent synced to Auth0: ${result.auth0UserId}`);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface Auth0CompanionConfig {
+  domain: string;              // Auth0 domain (e.g., "my-tenant.us.auth0.com")
+  clientId: string;            // Management API client ID
+  clientSecret: string;        // Management API client secret
+  audience?: string;           // API audience for M2M grants
+  connection?: string;         // Auth0 connection name
+  agentMetadataKey?: string;   // Metadata key (default: "agentdoor")
+}
+```
+
+### How It Works
+
+1. When an agent registers, a corresponding Auth0 user is created
+2. The user's `app_metadata` contains agent information:
+
+```json
+{
+  "agentdoor": {
+    "is_agent": true,
+    "agent_id": "ag_xxx",
+    "scopes": ["data.read", "data.write"],
+    "wallet": "0x1234..."
+  }
+}
+```
+
+3. If an `audience` is configured, a client grant is created with the agent's scopes
+
+### Methods
+
+#### onAgentRegistered
+
+Sync a newly registered agent to Auth0.
+
+```typescript
+const result = await auth0Companion.onAgentRegistered(agent);
+
+interface Auth0SyncResult {
+  auth0UserId: string;    // Auth0 user ID
+  agentId: string;        // AgentDoor agent ID
+  synced: boolean;        // Whether sync succeeded
+  grantId?: string;       // Client grant ID (if audience configured)
+}
+```
+
+#### onAgentRevoked
+
+Remove an agent from Auth0 when revoked.
+
+```typescript
+await auth0Companion.onAgentRevoked("ag_xxx");
+```
+
+#### syncAgent
+
+Manually sync or update an existing agent.
+
+```typescript
+const result = await auth0Companion.syncAgent(agent);
+```
+
+#### getAuth0UserId
+
+Get the Auth0 user ID for an agent.
+
+```typescript
+const auth0UserId = await auth0Companion.getAuth0UserId("ag_xxx");
+```
+
+## Clerk Companion
+
+Sync agents as Clerk users.
+
+### Installation
+
+```bash
+npm install @agentdoor/clerk
+```
+
+### Setup
+
+```typescript
+import { ClerkCompanion } from "@agentdoor/clerk";
+import { clerkClient } from "@clerk/nextjs/server";
+
+const clerkCompanion = new ClerkCompanion(
+  {
+    secretKey: process.env.CLERK_SECRET_KEY!,
+    agentMetadataKey: "agentdoor"
+  },
+  clerkClient
+);
+
+const door = createAgentDoor({
+  scopes: [...],
+  onAgentRegistered: async (agent) => {
+    await clerkCompanion.onAgentRegistered(agent);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface ClerkCompanionConfig {
+  secretKey: string;           // Clerk secret key
+  agentMetadataKey?: string;   // Metadata key (default: "agentdoor")
+}
+```
+
+### Methods
+
+Similar to Auth0 companion:
+
+- `onAgentRegistered(agent)` - Create Clerk user for agent
+- `onAgentRevoked(agentId)` - Delete Clerk user
+- `syncAgent(agent)` - Update existing Clerk user
+- `getClerkUserId(agentId)` - Get Clerk user ID
+
+## Firebase Companion
+
+Sync agents to Firebase Authentication.
+
+### Installation
+
+```bash
+npm install @agentdoor/firebase
+npm install firebase-admin
+```
+
+### Setup
+
+```typescript
+import { FirebaseCompanion } from "@agentdoor/firebase";
+import admin from "firebase-admin";
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const firebaseCompanion = new FirebaseCompanion(
+  {
+    agentMetadataKey: "agentdoor"
+  },
+  admin.auth()
+);
+
+const door = createAgentDoor({
+  scopes: [...],
+  onAgentRegistered: async (agent) => {
+    await firebaseCompanion.onAgentRegistered(agent);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface FirebaseCompanionConfig {
+  agentMetadataKey?: string;   // Custom claims key (default: "agentdoor")
+}
+```
+
+### How It Works
+
+1. Creates a Firebase user for each agent
+2. Sets custom claims with agent metadata:
+
+```json
+{
+  "agentdoor": {
+    "is_agent": true,
+    "agent_id": "ag_xxx",
+    "scopes": ["data.read"]
+  }
+}
+```
+
+3. Agent email: `{agent_id}@agents.{project_id}.firebaseapp.com`
+
+## NextAuth.js Companion
+
+Integrate agents with NextAuth.js sessions.
+
+### Installation
+
+```bash
+npm install @agentdoor/next-auth
+```
+
+### Setup
+
+```typescript
+import { NextAuthCompanion } from "@agentdoor/next-auth";
+import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { prisma } from "@/lib/prisma";
+
+const nextAuthCompanion = new NextAuthCompanion({
+  adapter: PrismaAdapter(prisma),
+  agentAccountType: "agent",
+});
+
+const door = createAgentDoor({
+  scopes: [...],
+  onAgentRegistered: async (agent) => {
+    await nextAuthCompanion.onAgentRegistered(agent);
+  }
+});
+```
+
+### Configuration
+
+```typescript
+interface NextAuthCompanionConfig {
+  adapter: Adapter;          // NextAuth adapter
+  agentAccountType?: string; // Account type field value (default: "agent")
+}
+```
+
+## Custom Companion
+
+Implement a companion for any auth provider:
+
+```typescript
+import type { Agent } from "@agentdoor/core";
+
+export class CustomCompanion {
+  async onAgentRegistered(agent: Agent): Promise<void> {
+    // Create user in your auth system
+    await customAuth.createUser({
+      id: agent.id,
+      email: `${agent.id}@agents.example.com`,
+      metadata: {
+        is_agent: true,
+        scopes: agent.scopesGranted,
+        wallet: agent.x402Wallet,
+      }
+    });
+  }
+
+  async onAgentRevoked(agentId: string): Promise<void> {
+    // Delete user from your auth system
+    await customAuth.deleteUser(agentId);
+  }
+
+  async syncAgent(agent: Agent): Promise<void> {
+    // Update user in your auth system
+    await customAuth.updateUser(agent.id, {
+      metadata: {
+        scopes: agent.scopesGranted,
+        reputation: agent.reputation,
+      }
+    });
+  }
+}
+```
+
+## Multi-Provider Setup
+
+Use multiple companions simultaneously:
+
+```typescript
+const auth0Companion = new Auth0Companion(...);
+const clerkCompanion = new ClerkCompanion(...);
+
+const door = createAgentDoor({
+  scopes: [...],
+  
+  onAgentRegistered: async (agent) => {
+    // Sync to both providers
+    await Promise.all([
+      auth0Companion.onAgentRegistered(agent),
+      clerkCompanion.onAgentRegistered(agent),
+    ]);
+  },
+  
+  onAgentAuthenticated: async (agent) => {
+    // Update both providers
+    await Promise.all([
+      auth0Companion.syncAgent(agent),
+      clerkCompanion.syncAgent(agent),
+    ]);
+  }
+});
+```
+
+## Error Handling
+
+```typescript
+onAgentRegistered: async (agent) => {
+  try {
+    const result = await auth0Companion.onAgentRegistered(agent);
+    
+    if (!result.synced) {
+      console.error(`Failed to sync agent ${agent.id} to Auth0`);
+      // Optionally: Store sync failure for retry
+    }
+  } catch (error) {
+    console.error(`Auth0 sync error:`, error);
+    // Don't fail agent registration if sync fails
+  }
+}
+```
+
+## Querying Agents
+
+### Auth0
+
+```typescript
+// Search for agents in Auth0
+const users = await auth0.getUsers({
+  q: 'app_metadata.agentdoor.is_agent:true',
+  search_engine: 'v3'
+});
+```
+
+### Clerk
+
+```typescript
+// Get agent users from Clerk
+const users = await clerkClient.users.getUserList({
+  limit: 100
+});
+
+const agents = users.filter(u => 
+  u.publicMetadata?.agentdoor?.is_agent === true
+);
+```
+
+### Firebase
+
+```typescript
+// List agent users
+const listResult = await admin.auth().listUsers();
+
+const agents = listResult.users.filter(u => 
+  u.customClaims?.agentdoor?.is_agent === true
+);
+```
+
+## Best Practices
+
+1. **Don't block registration**: Handle sync failures gracefully without preventing agent registration
+2. **Use metadata**: Store agent-specific data in provider's metadata fields
+3. **Implement retries**: Retry failed syncs in a background job
+4. **Monitor sync status**: Track sync successes/failures
+5. **Cleanup on revoke**: Always remove users when agents are revoked
+6. **Test sync**: Verify agents appear correctly in provider dashboards

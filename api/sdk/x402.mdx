@@ -1,0 +1,449 @@
+---
+title: x402 Payment Functions
+description: Build and manage x402 payment headers for HTTP 402 Payment Required protocol
+---
+
+The x402 module provides functions for building payment headers according to the x402 V2 protocol specification. The x402 protocol uses HTTP 402 (Payment Required) responses to signal that a request requires payment.
+
+## Overview
+
+The x402 protocol enables pay-per-use APIs by:
+
+1. Agents pre-attach an `X-PAYMENT` header with signed payment commitment
+2. Services verify the payment and process the request
+3. Settlement happens on-chain (Base, Solana, etc.)
+4. No 402 round-trip needed when payment header is valid
+
+## Functions
+
+### buildPaymentHeader()
+
+Build the X-PAYMENT header value for an authenticated request. The header value is a base64-encoded JSON payload conforming to the x402 V2 specification.
+
+```typescript
+import { buildPaymentHeader } from "@agentdoor/sdk";
+
+const walletConfig = {
+  address: "0x1234567890abcdef1234567890abcdef12345678",
+  network: "base",
+  currency: "USDC",
+  maxAmountPerRequest: "0.01"
+};
+
+const context = {
+  path: "/api/analyze",
+  method: "POST"
+};
+
+const paymentHeader = buildPaymentHeader(walletConfig, context);
+// Attach to request: headers["X-PAYMENT"] = paymentHeader
+```
+
+<ParamField path="walletConfig" type="X402WalletConfig" required>
+  The agent's wallet configuration including address, network, and currency.
+</ParamField>
+
+<ParamField path="context" type="RequestContext" required>
+  Information about the current request (path, method, optional amount).
+</ParamField>
+
+<ResponseField name="headerValue" type="string">
+  Base64-encoded X-PAYMENT header value ready to be attached to the request.
+</ResponseField>
+
+### buildSignedPaymentHeader()
+
+Build the X-PAYMENT header value with an async wallet signature. Use this when the wallet config has a `signPayload` function that produces a cryptographic signature for on-chain payment verification.
+
+```typescript
+import { buildSignedPaymentHeader } from "@agentdoor/sdk";
+import { Wallet } from "ethers";
+
+const wallet = new Wallet(process.env.PRIVATE_KEY);
+
+const walletConfig = {
+  address: wallet.address,
+  network: "base",
+  currency: "USDC",
+  maxAmountPerRequest: "0.01",
+  signPayload: async (payload: string) => {
+    return await wallet.signMessage(payload);
+  }
+};
+
+const context = {
+  path: "/api/premium/analyze",
+  method: "POST",
+  amount: "0.05"
+};
+
+const paymentHeader = await buildSignedPaymentHeader(walletConfig, context);
+```
+
+<ParamField path="walletConfig" type="X402WalletConfig & { signPayload }" required>
+  The agent's wallet configuration with a `signPayload` function that signs the payment commitment.
+</ParamField>
+
+<ParamField path="context" type="RequestContext" required>
+  Information about the current request.
+</ParamField>
+
+<ResponseField name="headerValue" type="Promise<string>">
+  Promise that resolves to the base64-encoded X-PAYMENT header value with signature.
+</ResponseField>
+
+### decodePaymentHeader()
+
+Decode a base64-encoded X-PAYMENT header value back to a payload object. Useful for debugging and testing.
+
+```typescript
+import { decodePaymentHeader } from "@agentdoor/sdk";
+
+const headerValue = "eyJ2ZXJzaW9uIjoiMi4wIiwi...";
+const payload = decodePaymentHeader(headerValue);
+
+console.log("Payment from:", payload.from);
+console.log("Network:", payload.network);
+console.log("Max amount:", payload.maxAmount);
+```
+
+<ParamField path="headerValue" type="string" required>
+  The base64-encoded X-PAYMENT header value to decode.
+</ParamField>
+
+<ResponseField name="payload" type="X402PaymentPayload">
+  The decoded payment payload object.
+</ResponseField>
+
+**Throws:**
+- `X402Error` if the header value is not valid base64
+- `X402Error` if the decoded JSON is malformed
+- `X402Error` if the payload version is not "2.0"
+- `X402Error` if required fields are missing
+
+### validateWalletConfig()
+
+Validate that a wallet config has the minimum required fields.
+
+```typescript
+import { validateWalletConfig } from "@agentdoor/sdk";
+
+const walletConfig = {
+  address: "0x1234567890abcdef1234567890abcdef12345678",
+  network: "base",
+  currency: "USDC"
+};
+
+try {
+  validateWalletConfig(walletConfig);
+  console.log("Wallet config is valid");
+} catch (error) {
+  console.error("Invalid wallet config:", error.message);
+}
+```
+
+<ParamField path="config" type="X402WalletConfig" required>
+  The wallet configuration to validate.
+</ParamField>
+
+**Throws:**
+- `X402Error` if `address` is missing or not a string
+- `X402Error` if `network` is missing or not a string  
+- `X402Error` if `currency` is missing or not a string
+
+## Type Definitions
+
+### X402WalletConfig
+
+x402 wallet configuration for the agent.
+
+```typescript
+interface X402WalletConfig {
+  address: string;              // The agent's wallet address
+  network: string;              // Blockchain network ("base", "solana", etc.)
+  currency: string;             // Payment currency ("USDC", "ETH", etc.)
+  maxAmountPerRequest?: string; // Max amount willing to pay per request
+  facilitatorUrl?: string;      // Custom facilitator URL
+  signPayload?: (payload: string) => Promise<string>; // Optional signing function
+}
+```
+
+<ParamField path="address" type="string" required>
+  The agent's wallet address (e.g., "0x1234...abcd" for EVM chains).
+</ParamField>
+
+<ParamField path="network" type="string" required>
+  The blockchain network (e.g., "base", "solana", "ethereum").
+</ParamField>
+
+<ParamField path="currency" type="string" required>
+  The payment currency (e.g., "USDC", "ETH", "SOL").
+</ParamField>
+
+<ParamField path="maxAmountPerRequest" type="string" optional>
+  Maximum amount the agent is willing to pay per request. Denominated in the specified currency.
+</ParamField>
+
+<ParamField path="facilitatorUrl" type="string" optional>
+  Custom facilitator URL for payment processing.
+</ParamField>
+
+<ParamField path="signPayload" type="(payload: string) => Promise<string>" optional>
+  Signing function for producing a wallet signature. Receives the serialized payment payload and returns a hex-encoded signature.
+</ParamField>
+
+### RequestContext
+
+Context about the request being made (used to build the payment payload).
+
+```typescript
+interface RequestContext {
+  path: string;    // The URL path being requested
+  method: string;  // The HTTP method (GET, POST, etc.)
+  amount?: string; // Optional: specific amount to pay for this request
+}
+```
+
+### X402PaymentPayload
+
+The structured x402 payment payload before encoding.
+
+```typescript
+interface X402PaymentPayload {
+  version: "2.0";          // Protocol version
+  from: string;            // The payer's wallet address
+  network: string;         // The blockchain network
+  currency: string;        // The payment currency
+  timestamp: string;       // ISO-8601 timestamp
+  resource: string;        // The request path
+  method: string;          // The HTTP method
+  maxAmount?: string;      // Maximum payment amount
+  signature?: string;      // Hex-encoded wallet signature
+}
+```
+
+### X402Error
+
+Error thrown for x402 payment-related issues.
+
+```typescript
+class X402Error extends Error {
+  constructor(message: string);
+}
+```
+
+## Examples
+
+### Basic Payment Header (Unsigned)
+
+```typescript
+import { buildPaymentHeader } from "@agentdoor/sdk";
+
+const walletConfig = {
+  address: "0x1234567890abcdef1234567890abcdef12345678",
+  network: "base",
+  currency: "USDC",
+  maxAmountPerRequest: "0.01"
+};
+
+const paymentHeader = buildPaymentHeader(walletConfig, {
+  path: "/api/weather/forecast",
+  method: "GET"
+});
+
+// Use with fetch
+fetch("https://api.example.com/api/weather/forecast", {
+  headers: {
+    "Authorization": "Bearer <token>",
+    "X-PAYMENT": paymentHeader
+  }
+});
+```
+
+### Signed Payment Header (EVM Wallet)
+
+```typescript
+import { buildSignedPaymentHeader } from "@agentdoor/sdk";
+import { Wallet } from "ethers";
+
+const wallet = new Wallet(process.env.PRIVATE_KEY);
+
+const walletConfig = {
+  address: wallet.address,
+  network: "base",
+  currency: "USDC",
+  maxAmountPerRequest: "1.00",
+  signPayload: async (payload: string) => {
+    return await wallet.signMessage(payload);
+  }
+};
+
+const paymentHeader = await buildSignedPaymentHeader(walletConfig, {
+  path: "/api/premium/analysis",
+  method: "POST",
+  amount: "0.50" // Override max amount for this specific request
+});
+
+console.log("Signed payment header:", paymentHeader);
+```
+
+### Using with Session
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+// Configure agent with wallet
+const agent = new AgentDoor({
+  x402Wallet: {
+    address: "0x1234567890abcdef1234567890abcdef12345678",
+    network: "base",
+    currency: "USDC",
+    maxAmountPerRequest: "0.10"
+  }
+});
+
+const session = await agent.connect("https://api.example.com");
+
+// Payment header is automatically attached when x402: true
+const response = await session.post("/analyze", {
+  body: { text: "..." },
+  x402: true // Attaches X-PAYMENT header
+});
+```
+
+### Decode Payment Header
+
+```typescript
+import { buildPaymentHeader, decodePaymentHeader } from "@agentdoor/sdk";
+
+const walletConfig = {
+  address: "0xabcd...",
+  network: "base",
+  currency: "USDC"
+};
+
+const header = buildPaymentHeader(walletConfig, {
+  path: "/api/test",
+  method: "GET"
+});
+
+console.log("Encoded header:", header);
+
+const payload = decodePaymentHeader(header);
+console.log("Decoded payload:", payload);
+/*
+{
+  version: "2.0",
+  from: "0xabcd...",
+  network: "base",
+  currency: "USDC",
+  timestamp: "2026-03-03T12:00:00.000Z",
+  resource: "/api/test",
+  method: "GET"
+}
+*/
+```
+
+### Wallet Config as String
+
+When using AgentDoor constructor, you can pass a wallet address as a string (defaults to Base + USDC):
+
+```typescript
+import { AgentDoor } from "@agentdoor/sdk";
+
+// String shorthand - defaults to Base network with USDC
+const agent = new AgentDoor({
+  x402Wallet: "0x1234567890abcdef1234567890abcdef12345678"
+});
+
+// Equivalent to:
+const agentExpanded = new AgentDoor({
+  x402Wallet: {
+    address: "0x1234567890abcdef1234567890abcdef12345678",
+    network: "base",
+    currency: "USDC"
+  }
+});
+```
+
+### Multiple Currencies
+
+```typescript
+import { buildPaymentHeader } from "@agentdoor/sdk";
+
+// Pay with ETH on Base
+const ethHeader = buildPaymentHeader(
+  {
+    address: "0x...",
+    network: "base",
+    currency: "ETH",
+    maxAmountPerRequest: "0.001"
+  },
+  { path: "/api/data", method: "GET" }
+);
+
+// Pay with SOL on Solana
+const solHeader = buildPaymentHeader(
+  {
+    address: "...",
+    network: "solana",
+    currency: "SOL",
+    maxAmountPerRequest: "0.01"
+  },
+  { path: "/api/data", method: "GET" }
+);
+```
+
+### Validate Wallet Config
+
+```typescript
+import { validateWalletConfig, X402Error } from "@agentdoor/sdk";
+
+function createAgent(walletConfig: unknown) {
+  try {
+    validateWalletConfig(walletConfig as X402WalletConfig);
+    return new AgentDoor({ x402Wallet: walletConfig as X402WalletConfig });
+  } catch (error) {
+    if (error instanceof X402Error) {
+      console.error("Invalid wallet configuration:", error.message);
+      throw new Error("Please provide valid wallet configuration");
+    }
+    throw error;
+  }
+}
+```
+
+### Error Handling
+
+```typescript
+import { buildPaymentHeader, X402Error } from "@agentdoor/sdk";
+
+try {
+  const header = buildPaymentHeader(
+    {
+      address: "0x...",
+      network: "base",
+      currency: "USDC"
+    },
+    { path: "/api/test", method: "POST" }
+  );
+  
+  const response = await fetch("https://api.example.com/api/test", {
+    method: "POST",
+    headers: {
+      "X-PAYMENT": header,
+      "Authorization": "Bearer <token>"
+    }
+  });
+  
+  if (response.status === 402) {
+    const error = await response.json();
+    console.error("Payment required:", error);
+    // Payment was insufficient or invalid
+  }
+} catch (error) {
+  if (error instanceof X402Error) {
+    console.error("Payment error:", error.message);
+  }
+}
+```

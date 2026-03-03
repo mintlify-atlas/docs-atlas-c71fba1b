@@ -1,0 +1,520 @@
+---
+title: Webhooks
+description: Agent lifecycle event webhooks with retry and HMAC signing
+---
+
+## Overview
+
+Webhooks deliver real-time notifications about agent lifecycle events to your HTTP endpoints. AgentDoor supports:
+
+- Event filtering by type
+- HMAC-SHA256 signature verification
+- Automatic retries with exponential backoff
+- Custom headers
+- Multiple endpoints
+
+## Configuration
+
+```typescript
+import { createAgentDoor } from "@agentdoor/core";
+
+const door = createAgentDoor({
+  scopes: [...],
+  
+  webhooks: {
+    enabled: true,
+    endpoints: [
+      {
+        url: "https://hooks.example.com/agentdoor",
+        secret: "whsec_..." || process.env.WEBHOOK_SECRET,
+        events: ["agent.registered", "agent.authenticated"],
+        headers: {
+          "X-Custom-Header": "value"
+        },
+        maxRetries: 3,
+        timeoutMs: 10000
+      },
+      {
+        url: "https://logs.example.com/agentdoor",
+        // No events filter = subscribe to all events
+        maxRetries: 5
+      }
+    ]
+  }
+});
+```
+
+### Endpoint Configuration
+
+```typescript
+interface WebhookEndpointConfig {
+  url: string;                    // Webhook delivery URL
+  events?: string[];              // Event types to subscribe to (empty = all)
+  secret?: string;                // HMAC-SHA256 signing secret
+  headers?: Record<string, string>; // Custom HTTP headers
+  maxRetries?: number;            // Max retry attempts (default: 3)
+  timeoutMs?: number;             // Request timeout (default: 10000)
+}
+```
+
+## Event Types
+
+AgentDoor emits the following webhook events:
+
+```typescript
+type WebhookEventType =
+  | "agent.registered"              // New agent registered
+  | "agent.authenticated"           // Agent authenticated
+  | "agent.payment_failed"          // x402 payment failed
+  | "agent.rate_limited"            // Agent hit rate limit
+  | "agent.flagged"                 // Agent flagged for review
+  | "agent.suspended"               // Agent suspended
+  | "agent.spending_cap_warning"   // Approaching spending cap
+  | "agent.spending_cap_exceeded"; // Spending cap exceeded
+```
+
+## Event Payload
+
+All webhook events follow this structure:
+
+```typescript
+interface WebhookEvent<T> {
+  id: string;           // Unique event ID (e.g., "evt_1234567890_1")
+  type: WebhookEventType; // Event type
+  timestamp: string;    // ISO 8601 timestamp
+  data: T;              // Event-specific payload
+}
+```
+
+## Event Data Schemas
+
+### agent.registered
+
+```typescript
+interface AgentRegisteredData {
+  agent_id: string;
+  public_key: string;
+  scopes_granted: string[];
+  x402_wallet?: string;
+  metadata: Record<string, string>;
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709567890_42",
+  "type": "agent.registered",
+  "timestamp": "2024-03-04T10:30:00Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "public_key": "6LmP4Zq...",
+    "scopes_granted": ["data.read", "data.write"],
+    "x402_wallet": "0x1234...",
+    "metadata": {
+      "framework": "langchain",
+      "version": "0.1.0"
+    }
+  }
+}
+```
+
+### agent.authenticated
+
+```typescript
+interface AgentAuthenticatedData {
+  agent_id: string;
+  method: "api_key" | "jwt" | "challenge";
+  ip?: string;
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709567920_43",
+  "type": "agent.authenticated",
+  "timestamp": "2024-03-04T10:32:00Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "method": "api_key",
+    "ip": "203.0.113.42"
+  }
+}
+```
+
+### agent.payment_failed
+
+```typescript
+interface AgentPaymentFailedData {
+  agent_id: string;
+  amount: string;
+  currency: string;
+  reason: string;
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709568000_44",
+  "type": "agent.payment_failed",
+  "timestamp": "2024-03-04T10:33:20Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "amount": "0.01",
+    "currency": "USDC",
+    "reason": "Insufficient balance"
+  }
+}
+```
+
+### agent.rate_limited
+
+```typescript
+interface AgentRateLimitedData {
+  agent_id: string;
+  limit: number;
+  window: string;
+  retry_after_seconds: number;
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709568100_45",
+  "type": "agent.rate_limited",
+  "timestamp": "2024-03-04T10:35:00Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "limit": 1000,
+    "window": "1h",
+    "retry_after_seconds": 300
+  }
+}
+```
+
+### agent.flagged
+
+```typescript
+interface AgentFlaggedData {
+  agent_id: string;
+  reason: string;
+  reputation_score: number;
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709568200_46",
+  "type": "agent.flagged",
+  "timestamp": "2024-03-04T10:36:40Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "reason": "Low reputation score",
+    "reputation_score": 18
+  }
+}
+```
+
+### agent.spending_cap_warning
+
+```typescript
+interface AgentSpendingCapData {
+  agent_id: string;
+  current_spend: number;
+  cap_amount: number;
+  cap_period: "daily" | "monthly";
+  cap_type: "soft" | "hard";
+}
+```
+
+**Example:**
+```json
+{
+  "id": "evt_1709568300_47",
+  "type": "agent.spending_cap_warning",
+  "timestamp": "2024-03-04T10:38:20Z",
+  "data": {
+    "agent_id": "ag_abc123",
+    "current_spend": 8.5,
+    "cap_amount": 10,
+    "cap_period": "daily",
+    "cap_type": "hard"
+  }
+}
+```
+
+## Webhook Headers
+
+AgentDoor sends the following headers with each webhook request:
+
+```
+Content-Type: application/json
+User-Agent: AgentDoor-Webhooks/1.0
+X-AgentDoor-Event: agent.registered
+X-AgentDoor-Event-Id: evt_1709567890_42
+X-AgentDoor-Timestamp: 2024-03-04T10:30:00Z
+X-AgentDoor-Signature: sha256=abc123...
+```
+
+### Signature Verification (HMAC-SHA256)
+
+If a `secret` is configured, AgentDoor signs the webhook payload:
+
+```typescript
+// Your webhook handler
+export async function POST(req: Request) {
+  const signature = req.headers.get("x-agentdoor-signature");
+  const payload = await req.text();
+  
+  // Verify signature
+  const expectedSignature = await computeHmac(
+    payload,
+    process.env.WEBHOOK_SECRET!
+  );
+  
+  if (signature !== `sha256=${expectedSignature}`) {
+    return new Response("Invalid signature", { status: 401 });
+  }
+  
+  // Process event
+  const event = JSON.parse(payload);
+  // ...
+}
+
+async function computeHmac(payload: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(payload)
+  );
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+```
+
+## Retry Logic
+
+Webhooks are retried automatically on failure:
+
+- **Retry on**: Network errors, timeouts, HTTP 5xx, HTTP 429
+- **No retry on**: HTTP 4xx (except 429)
+- **Backoff**: Exponential with jitter (1s, 2s, 4s, 8s, max 10s)
+- **Max retries**: Configurable per endpoint (default: 3)
+
+### Delivery Result
+
+```typescript
+interface WebhookDeliveryResult {
+  url: string;           // Endpoint URL
+  success: boolean;      // Whether delivery succeeded
+  statusCode?: number;   // HTTP status code
+  error?: string;        // Error message if failed
+  attempts: number;      // Number of attempts made
+}
+```
+
+## In-Process Listeners
+
+Listen to events in your application without HTTP:
+
+```typescript
+import { WebhookEmitter } from "@agentdoor/core/webhooks";
+
+const emitter = new WebhookEmitter();
+
+// Listen to specific event
+emitter.on("agent.registered", (event) => {
+  console.log(`Agent ${event.data.agent_id} registered`);
+  // Send to analytics, etc.
+});
+
+// Listen to all events
+emitter.on("*", (event) => {
+  console.log(`Event: ${event.type}`);
+});
+
+// Emit event manually
+await emitter.emit("agent.registered", {
+  agent_id: "ag_xxx",
+  public_key: "...",
+  scopes_granted: ["data.read"],
+  metadata: {}
+});
+```
+
+## Example Handlers
+
+### Next.js Route Handler
+
+```typescript
+// app/api/webhooks/agentdoor/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { headers } from "next/headers";
+
+export async function POST(req: NextRequest) {
+  const signature = req.headers.get("x-agentdoor-signature");
+  const payload = await req.text();
+  
+  // Verify signature
+  if (!verifySignature(payload, signature)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+  }
+  
+  const event = JSON.parse(payload);
+  
+  switch (event.type) {
+    case "agent.registered":
+      await handleAgentRegistered(event.data);
+      break;
+    case "agent.payment_failed":
+      await handlePaymentFailed(event.data);
+      break;
+    // Handle other events...
+  }
+  
+  return NextResponse.json({ received: true });
+}
+
+async function handleAgentRegistered(data: AgentRegisteredData) {
+  // Send welcome email, notify team, etc.
+  await sendSlackNotification(`New agent: ${data.agent_id}`);
+}
+
+async function handlePaymentFailed(data: AgentPaymentFailedData) {
+  // Alert on payment failures
+  await sendAlert(`Payment failed for ${data.agent_id}: ${data.reason}`);
+}
+```
+
+### Express.js Handler
+
+```typescript
+import express from "express";
+import { createHmac } from "crypto";
+
+const app = express();
+
+app.post("/webhooks/agentdoor", express.text(), (req, res) => {
+  const signature = req.headers["x-agentdoor-signature"];
+  const payload = req.body;
+  
+  // Verify signature
+  const expectedSignature = createHmac("sha256", process.env.WEBHOOK_SECRET!)
+    .update(payload)
+    .digest("hex");
+  
+  if (signature !== `sha256=${expectedSignature}`) {
+    return res.status(401).json({ error: "Invalid signature" });
+  }
+  
+  const event = JSON.parse(payload);
+  
+  // Process event
+  processEvent(event);
+  
+  res.json({ received: true });
+});
+```
+
+## Testing Webhooks
+
+### Local Testing with ngrok
+
+```bash
+# Start ngrok tunnel
+ngrok http 3000
+
+# Use ngrok URL in webhook config
+webhooks: {
+  endpoints: [
+    {
+      url: "https://abc123.ngrok.io/webhooks/agentdoor",
+      secret: "test_secret"
+    }
+  ]
+}
+```
+
+### Mock Webhook Server
+
+```typescript
+import express from "express";
+
+const app = express();
+
+app.post("/webhooks", express.json(), (req, res) => {
+  console.log("Received webhook:", req.body);
+  res.json({ received: true });
+});
+
+app.listen(4000, () => {
+  console.log("Mock webhook server on :4000");
+});
+```
+
+## Best Practices
+
+1. **Verify signatures**: Always verify HMAC signatures in production
+2. **Idempotency**: Handle duplicate events (same `id`) gracefully
+3. **Respond quickly**: Return 200 within 10 seconds to avoid retries
+4. **Process async**: Queue events for background processing
+5. **Monitor failures**: Track failed deliveries and alert on patterns
+6. **Filter events**: Only subscribe to events you need
+7. **Log everything**: Keep audit logs of all webhook deliveries
+8. **Rotate secrets**: Periodically rotate webhook secrets
+
+## Monitoring
+
+```typescript
+import { WebhookEmitter } from "@agentdoor/core/webhooks";
+
+const emitter = new WebhookEmitter(config.webhooks);
+
+// Track delivery results
+emitter.on("*", async (event) => {
+  const results = await emitter.emit(event.type, event.data);
+  
+  for (const result of results) {
+    if (!result.success) {
+      console.error(`Webhook delivery failed to ${result.url}:`, result.error);
+      // Send alert, increment metrics, etc.
+    }
+  }
+});
+```
+
+## Troubleshooting
+
+### Webhook not received
+
+1. Check endpoint URL is publicly accessible
+2. Verify firewall/security group allows incoming requests
+3. Check webhook endpoint returns 200 status
+4. Review event type filter in configuration
+
+### Signature verification fails
+
+1. Verify secret matches on both sides
+2. Use raw request body for verification (not parsed JSON)
+3. Check encoding (UTF-8)
+4. Ensure timestamp header is recent (prevent replay attacks)
+
+### Too many retries
+
+1. Fix endpoint to return 200 faster
+2. Move processing to background queue
+3. Check for timeout issues
+4. Increase `timeoutMs` if needed

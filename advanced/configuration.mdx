@@ -1,0 +1,432 @@
+---
+title: Configuration
+description: Complete configuration reference for AgentDoor
+---
+
+## Overview
+
+AgentDoor uses a strongly-typed configuration object validated with Zod schemas at runtime. All configuration options are defined in `@agentdoor/core/config`.
+
+## Configuration Schema
+
+### Basic Structure
+
+```typescript
+import type { AgentDoorConfig } from "@agentdoor/core";
+
+const config: AgentDoorConfig = {
+  scopes: [
+    { id: "data.read", description: "Read access", price: "$0.001/req" }
+  ],
+  storage: { driver: "memory" },
+  // ... more options
+};
+```
+
+## Core Options
+
+### scopes (required)
+
+Array of scope definitions that define what agents can access.
+
+```typescript
+scopes: [
+  {
+    id: string;              // Scope ID (must start with letter, alphanumeric + . _)
+    description: string;     // Human-readable description
+    price?: string;          // Price per request (e.g., "$0.001/req")
+    rateLimit?: string;      // Per-scope rate limit (e.g., "100/hour")
+  }
+]
+```
+
+**Example:**
+```typescript
+scopes: [
+  { 
+    id: "data.read", 
+    description: "Read access to data endpoints",
+    price: "$0.001/req",
+    rateLimit: "1000/hour"
+  },
+  { 
+    id: "data.write", 
+    description: "Write access to data endpoints",
+    price: "$0.01/req",
+    rateLimit: "100/hour"
+  },
+]
+```
+
+### pricing
+
+Optional top-level pricing map. Merged with per-scope prices.
+
+```typescript
+pricing?: Record<string, string>;
+```
+
+**Example:**
+```typescript
+pricing: {
+  "data.read": "$0.001/req",
+  "data.write": "$0.01/req",
+  "data.delete": "$0.05/req"
+}
+```
+
+### rateLimit
+
+Default rate limit applied to all agents unless overridden.
+
+```typescript
+rateLimit?: {
+  requests: number;     // Number of requests
+  window: string;       // Time window (e.g., "1h", "30m", "100s", "1d")
+}
+```
+
+**Default:** `{ requests: 1000, window: "1h" }`
+
+**Example:**
+```typescript
+rateLimit: {
+  requests: 500,
+  window: "15m"
+}
+```
+
+### registrationRateLimit
+
+Rate limit specifically for agent registration attempts (prevents abuse).
+
+```typescript
+registrationRateLimit?: {
+  requests: number;
+  window: string;
+}
+```
+
+**Default:** `{ requests: 10, window: "1h" }`
+
+### storage
+
+Storage backend configuration. See [Storage](/advanced/storage) for details.
+
+```typescript
+storage?: {
+  driver: "memory" | "sqlite" | "postgres" | "redis";
+  url?: string;              // Connection URL (for postgres/redis)
+  options?: Record<string, unknown>;  // Driver-specific options
+}
+```
+
+**Default:** `{ driver: "memory" }`
+
+### signing
+
+Cryptographic signing algorithm for agent authentication.
+
+```typescript
+signing?: {
+  algorithm: "ed25519" | "secp256k1";
+}
+```
+
+**Default:** `{ algorithm: "ed25519" }`
+
+### jwt
+
+JWT configuration for agent authentication tokens.
+
+```typescript
+jwt?: {
+  secret?: string;      // JWT signing secret (auto-generated if not provided)
+  expiresIn?: string;   // Token expiry (e.g., "1h", "7d", "30d")
+}
+```
+
+**Default:** `{ expiresIn: "7d" }` with auto-generated secret
+
+<Warning>
+  Always set an explicit JWT secret in production to ensure tokens remain valid across restarts.
+</Warning>
+
+### challengeExpirySeconds
+
+How long registration challenges remain valid (in seconds).
+
+```typescript
+challengeExpirySeconds?: number;
+```
+
+**Default:** `300` (5 minutes)
+
+### mode
+
+Runtime environment mode.
+
+```typescript
+mode?: "live" | "test";
+```
+
+**Default:** `"live"`
+
+## Payment Options
+
+### x402
+
+x402 micropayment protocol configuration.
+
+```typescript
+x402?: {
+  network: string;           // Blockchain network (e.g., "base", "solana")
+  currency: string;          // Payment currency (e.g., "USDC")
+  facilitator?: string;      // Optional x402 facilitator URL
+  paymentAddress: string;    // Your wallet address for receiving payments
+}
+```
+
+**Example:**
+```typescript
+x402: {
+  network: "base",
+  currency: "USDC",
+  paymentAddress: "0x1234..."
+}
+```
+
+## Service Metadata
+
+### service
+
+Service information for discovery documents.
+
+```typescript
+service?: {
+  name?: string;              // Service name
+  description?: string;       // Service description
+  docsUrl?: string;          // URL to API documentation
+  supportEmail?: string;     // Support contact email
+}
+```
+
+**Default:**
+```typescript
+service: {
+  name: "AgentDoor API",
+  description: "API protected by AgentDoor"
+}
+```
+
+## Companion Protocols
+
+### companion
+
+Enable companion protocol integrations.
+
+```typescript
+companion?: {
+  a2aAgentCard?: boolean;     // Generate A2A-compatible agent card
+  mcpServer?: boolean;        // Expose MCP server protocol
+  oauthCompat?: boolean;      // OAuth 2.0 compatibility mode
+}
+```
+
+**Default:**
+```typescript
+companion: {
+  a2aAgentCard: true,
+  mcpServer: false,
+  oauthCompat: false
+}
+```
+
+## Advanced Features (P1)
+
+### webhooks
+
+Webhook endpoints for agent lifecycle events. See [Webhooks](/advanced/webhooks).
+
+```typescript
+webhooks?: {
+  enabled?: boolean;
+  endpoints?: Array<{
+    url: string;                    // Webhook delivery URL
+    events?: string[];              // Event types to subscribe to
+    secret?: string;                // HMAC-SHA256 signing secret
+    headers?: Record<string, string>; // Custom HTTP headers
+    maxRetries?: number;            // Max retry attempts (default: 3)
+    timeoutMs?: number;             // Request timeout (default: 10000)
+  }>;
+}
+```
+
+**Example:**
+```typescript
+webhooks: {
+  enabled: true,
+  endpoints: [
+    {
+      url: "https://hooks.example.com/agentdoor",
+      secret: "whsec_...",
+      events: ["agent.registered", "agent.payment_failed"],
+      maxRetries: 5
+    }
+  ]
+}
+```
+
+### reputation
+
+Reputation scoring system. See [Rate Limiting](/advanced/rate-limiting#reputation-system).
+
+```typescript
+reputation?: {
+  enabled?: boolean;          // Enable reputation tracking
+  initialScore?: number;      // Starting score for new agents (0-100)
+  minScore?: number;          // Minimum possible score
+  maxScore?: number;          // Maximum possible score
+  weights?: Record<string, number>;  // Event score modifiers
+  gates?: Array<{            // Reputation-based access gates
+    minReputation: number;
+    scopes?: string[];
+    action: "block" | "warn";
+  }>;
+  flagThreshold?: number;     // Auto-flag agents below this score
+  suspendThreshold?: number;  // Auto-suspend agents below this score
+}
+```
+
+**Default:**
+```typescript
+reputation: {
+  enabled: false,
+  initialScore: 50,
+  minScore: 0,
+  maxScore: 100,
+  flagThreshold: 20,
+  suspendThreshold: 10
+}
+```
+
+### spendingCaps
+
+Spending limits per agent. See [Rate Limiting](/advanced/rate-limiting#spending-caps).
+
+```typescript
+spendingCaps?: {
+  enabled?: boolean;
+  defaultCaps?: Array<{
+    amount: number;              // Cap amount
+    currency: string;            // Currency code
+    period: "daily" | "monthly"; // Cap period
+    type: "hard" | "soft";       // Hard = block, soft = warn
+  }>;
+  warningThreshold?: number;   // Warn at this percentage (0-1)
+}
+```
+
+**Example:**
+```typescript
+spendingCaps: {
+  enabled: true,
+  defaultCaps: [
+    { amount: 10, currency: "USDC", period: "daily", type: "hard" },
+    { amount: 100, currency: "USDC", period: "monthly", type: "soft" }
+  ],
+  warningThreshold: 0.8  // Warn at 80% of cap
+}
+```
+
+## Lifecycle Callbacks
+
+### onAgentRegistered
+
+Callback invoked when a new agent registers.
+
+```typescript
+onAgentRegistered?: (agent: Agent) => void | Promise<void>;
+```
+
+**Example:**
+```typescript
+onAgentRegistered: async (agent) => {
+  console.log(`New agent registered: ${agent.id}`);
+  await notifyTeam(agent);
+}
+```
+
+### onAgentAuthenticated
+
+Callback invoked when an agent successfully authenticates.
+
+```typescript
+onAgentAuthenticated?: (agent: Agent) => void | Promise<void>;
+```
+
+**Example:**
+```typescript
+onAgentAuthenticated: (agent) => {
+  metrics.increment('agent.auth.success', { agent_id: agent.id });
+}
+```
+
+## Validation
+
+All configuration is validated at startup using Zod schemas. Invalid config will throw `InvalidConfigError` with detailed error messages.
+
+```typescript
+import { validateConfig, resolveConfig } from "@agentdoor/core/config";
+
+// Validate configuration
+try {
+  const validated = validateConfig(config);
+  const resolved = resolveConfig(validated); // Apply all defaults
+} catch (error) {
+  console.error("Invalid configuration:", error.message);
+}
+```
+
+## Environment Variables
+
+While AgentDoor accepts configuration objects, you can load values from environment variables:
+
+```typescript
+const config: AgentDoorConfig = {
+  scopes: [...],
+  jwt: {
+    secret: process.env.AGENTDOOR_JWT_SECRET,
+  },
+  x402: {
+    network: process.env.X402_NETWORK || "base",
+    currency: "USDC",
+    paymentAddress: process.env.X402_PAYMENT_ADDRESS!,
+  },
+  storage: {
+    driver: "postgres",
+    url: process.env.DATABASE_URL,
+  },
+};
+```
+
+## TypeScript Types
+
+All configuration types are exported from `@agentdoor/core`:
+
+```typescript
+import type {
+  AgentDoorConfig,
+  ScopeDefinition,
+  RateLimitConfig,
+  X402Config,
+  StorageConfig,
+  JwtConfig,
+  SigningConfig,
+  CompanionConfig,
+  ServiceConfig,
+  WebhooksConfig,
+  ReputationConfig,
+  SpendingCapsConfig,
+} from "@agentdoor/core";
+```

@@ -1,0 +1,445 @@
+---
+title: Deploy to Railway
+description: Deploy an agent-ready Express API to Railway with Docker and PostgreSQL
+---
+
+Railway provides a simple platform for deploying containerized applications with built-in PostgreSQL databases. This guide covers deploying AgentDoor with Express to Railway.
+
+## Quick Deploy
+
+Deploy the Railway template in one click:
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/agentdoor)
+
+<Steps>
+  <Step title="Click Deploy Button">
+    Click the "Deploy on Railway" button above to create a new project from the template.
+  </Step>
+  
+  <Step title="Configure Environment">
+    Set the `X402_WALLET` environment variable to your wallet address for receiving micropayments.
+  </Step>
+  
+  <Step title="Deploy">
+    Railway automatically builds and deploys your application using the included Dockerfile.
+  </Step>
+</Steps>
+
+## Manual Setup
+
+For custom deployments or integration into existing projects:
+
+### 1. Install Dependencies
+
+```bash
+npm install express @agentdoor/express
+```
+
+### 2. Create Express Application
+
+Create `src/index.ts` with AgentDoor middleware:
+
+```typescript
+import express from 'express';
+import { agentDoor } from '@agentdoor/express';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(express.json());
+
+// AgentDoor middleware
+app.use(
+  '/api',
+  agentDoor({
+    scopes: [
+      { id: 'data.read', description: 'Read application data', price: '$0.001/req' },
+      { id: 'data.write', description: 'Write application data', price: '$0.01/req' },
+      { id: 'admin', description: 'Administrative operations', price: '$0.05/req' },
+    ],
+    service: {
+      name: 'My Agent-Ready API',
+      description: 'Express API with AgentDoor authentication',
+    },
+    x402: {
+      network: 'base',
+      currency: 'USDC',
+      paymentAddress: process.env.X402_WALLET || '0xYourWalletAddress',
+    },
+  })
+);
+
+// Routes
+app.get('/', (req, res) => {
+  res.json({
+    name: 'Agent-Ready Express API',
+    discovery: '/.well-known/agentdoor',
+  });
+});
+
+app.get('/api/data', (req, res) => {
+  // This route requires data.read scope
+  res.json({
+    success: true,
+    data: [/* your data */]
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+export default app;
+```
+
+### 3. Create Dockerfile
+
+Create a `Dockerfile` in your project root:
+
+```dockerfile
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Copy source and build
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# Production image
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install production dependencies only
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy compiled output
+COPY --from=builder /app/dist ./dist
+
+# Set default port
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["node", "dist/index.js"]
+```
+
+### 4. Configure Railway
+
+Create `railway.json` in your project root:
+
+```json
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": { "builder": "NIXPACKS" },
+  "deploy": { "startCommand": "npm start" }
+}
+```
+
+### 5. Deploy to Railway
+
+<Steps>
+  <Step title="Install Railway CLI">
+    ```bash
+    npm install -g @railway/cli
+    ```
+  </Step>
+  
+  <Step title="Login to Railway">
+    ```bash
+    railway login
+    ```
+  </Step>
+  
+  <Step title="Initialize Project">
+    ```bash
+    railway init
+    ```
+  </Step>
+  
+  <Step title="Set Environment Variables">
+    ```bash
+    railway variables set X402_WALLET=0xYourWalletAddress
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    railway up
+    ```
+  </Step>
+</Steps>
+
+## Storage Configuration
+
+Railway supports multiple storage options for AgentDoor:
+
+### SQLite (Development)
+
+For single-instance deployments with persistent volumes:
+
+```typescript
+import { SQLiteStore } from '@agentdoor/core/advanced/storage';
+
+const store = new SQLiteStore({
+  path: './data/agentdoor.db'
+});
+
+app.use('/api', agentDoor({
+  // ... other config
+  storage: store
+}));
+```
+
+<Note>
+  SQLite requires a persistent volume. Configure in Railway dashboard under **Settings** → **Volumes**.
+</Note>
+
+### PostgreSQL (Production)
+
+Railway provides managed PostgreSQL. Add a database to your project:
+
+<Steps>
+  <Step title="Add PostgreSQL">
+    In Railway dashboard, click **New** → **Database** → **PostgreSQL**.
+  </Step>
+  
+  <Step title="Link Database">
+    Railway automatically sets the `DATABASE_URL` environment variable.
+  </Step>
+  
+  <Step title="Configure Storage">
+    ```typescript
+    import { PostgresStore } from '@agentdoor/core/storage/postgres';
+
+    const store = new PostgresStore({
+      connectionString: process.env.DATABASE_URL
+    });
+
+    app.use('/api', agentDoor({
+      // ... other config
+      storage: store
+    }));
+    ```
+  </Step>
+</Steps>
+
+## Environment Variables
+
+Set these variables in the Railway dashboard or via CLI:
+
+| Variable | Description | Required | Default |
+|----------|-------------|----------|--------|
+| `X402_WALLET` | Wallet address for receiving x402 payments | Yes | - |
+| `PORT` | Server port | No | 3000 |
+| `DATABASE_URL` | PostgreSQL connection string | Conditional | - |
+| `NODE_ENV` | Node environment | No | production |
+
+### Setting Variables via CLI
+
+```bash
+# Set a single variable
+railway variables set X402_WALLET=0xYourAddress
+
+# Set multiple variables
+railway variables set \
+  X402_WALLET=0xYourAddress \
+  NODE_ENV=production
+
+# View all variables
+railway variables
+```
+
+### Setting Variables via Dashboard
+
+1. Open your project in Railway dashboard
+2. Navigate to **Variables** tab
+3. Click **New Variable**
+4. Enter variable name and value
+5. Click **Add**
+
+## Custom Domains
+
+<Steps>
+  <Step title="Generate Railway Domain">
+    Railway automatically provides a `railway.app` subdomain. Find it in the **Settings** tab.
+  </Step>
+  
+  <Step title="Add Custom Domain">
+    Navigate to **Settings** → **Domains** → **Custom Domain** and enter your domain.
+  </Step>
+  
+  <Step title="Configure DNS">
+    Add a CNAME record pointing to your Railway deployment:
+    
+    ```
+    CNAME  api.yourdomain.com  your-app.railway.app
+    ```
+  </Step>
+  
+  <Step title="Enable SSL">
+    Railway automatically provisions SSL certificates via Let's Encrypt.
+  </Step>
+</Steps>
+
+## Health Checks and Monitoring
+
+### Health Check Endpoint
+
+Add a health check endpoint for Railway monitoring:
+
+```typescript
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV
+  });
+});
+```
+
+Configure in Railway dashboard under **Settings** → **Health Check**:
+
+- **Path**: `/health`
+- **Port**: `3000` (or your configured port)
+- **Timeout**: `30s`
+
+### Logging
+
+View logs in Railway dashboard or via CLI:
+
+```bash
+# Stream logs
+railway logs
+
+# View recent logs
+railway logs --tail 100
+```
+
+## Scaling
+
+### Vertical Scaling
+
+Increase resources in Railway dashboard under **Settings** → **Resources**:
+
+- **Memory**: 512MB - 32GB
+- **CPU**: Shared - 8 vCPUs
+
+### Horizontal Scaling
+
+For horizontal scaling, use Railway's replica feature:
+
+1. Navigate to **Settings** → **Scaling**
+2. Increase **Replica Count**
+3. Configure load balancing
+
+<Warning>
+  Horizontal scaling requires PostgreSQL or external storage. SQLite with volumes only works with single instances.
+</Warning>
+
+## CI/CD Integration
+
+Railway automatically deploys on git push when connected to a repository.
+
+### GitHub Integration
+
+<Steps>
+  <Step title="Connect Repository">
+    In Railway dashboard, click **Settings** → **Connect Repository**.
+  </Step>
+  
+  <Step title="Configure Branch">
+    Select the branch to deploy (e.g., `main` or `production`).
+  </Step>
+  
+  <Step title="Enable Auto-Deploy">
+    Railway automatically deploys on every push to the selected branch.
+  </Step>
+</Steps>
+
+### Manual Deployments
+
+Deploy manually via CLI:
+
+```bash
+# Deploy current directory
+railway up
+
+# Deploy specific branch
+railway up --branch production
+```
+
+## Troubleshooting
+
+### Build Failures
+
+If builds fail, check:
+
+1. **Dependencies**: Ensure all dependencies are in `package.json`
+2. **Build script**: Verify `build` script in `package.json`
+3. **TypeScript**: Check `tsconfig.json` configuration
+
+```bash
+# Test build locally
+npm run build
+```
+
+### Database Connection Issues
+
+If database connections fail:
+
+1. Verify `DATABASE_URL` is set correctly
+2. Check PostgreSQL service is running
+3. Review connection string format:
+
+```
+postgresql://user:password@host:port/database
+```
+
+### Port Binding
+
+Ensure your app listens on the `PORT` environment variable:
+
+```typescript
+const PORT = process.env.PORT || 3000;
+app.listen(PORT);
+```
+
+## Best Practices
+
+1. **Use PostgreSQL for Production**: SQLite is suitable for development, but PostgreSQL is recommended for production.
+
+2. **Enable Health Checks**: Configure health checks to monitor application availability.
+
+3. **Set NODE_ENV**: Always set `NODE_ENV=production` for production deployments.
+
+4. **Use Secrets for Sensitive Data**: Store sensitive values like API keys and wallet addresses as environment variables, never in code.
+
+5. **Monitor Logs**: Regularly review logs for errors and performance issues.
+
+6. **Backup Database**: Enable automated backups for PostgreSQL in Railway dashboard.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Storage" icon="database" href="/advanced/storage">
+    Learn about storage options and configuration
+  </Card>
+  <Card title="Rate Limiting" icon="gauge" href="/advanced/rate-limiting">
+    Configure rate limits for agents
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/advanced/webhooks">
+    Set up webhooks for agent events
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/advanced/monitoring">
+    Monitor your AgentDoor deployment
+  </Card>
+</CardGroup>

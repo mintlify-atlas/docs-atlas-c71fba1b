@@ -1,0 +1,202 @@
+---
+title: Authentication Endpoint
+description: Token refresh for returning agents
+---
+
+The authentication endpoint allows registered agents to obtain fresh JWT tokens without re-registering. This is used when an agent's JWT expires but they still have their private key.
+
+## Endpoint
+
+```
+POST /agentdoor/auth
+```
+
+This endpoint is for **returning agents only**. New agents must use the [registration flow](/api/registration) first.
+
+## How It Works
+
+The agent proves their identity by signing a message containing their agent ID and current timestamp:
+
+```
+agentdoor:auth:{agent_id}:{timestamp}
+```
+
+This is simpler than registration (no nonce) because we're just refreshing credentials, not establishing initial trust.
+
+## Request Body
+
+<ParamField body="agent_id" type="string" required>
+  The agent's ID (format: `ag_*`)
+</ParamField>
+
+<ParamField body="timestamp" type="string" required>
+  Current timestamp in ISO 8601 format (e.g., `"2024-01-01T00:00:00.000Z"`)
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  Base64-encoded Ed25519 signature of the message `agentdoor:auth:{agent_id}:{timestamp}`
+</ParamField>
+
+## Response (200 OK)
+
+<ResponseField name="token" type="string" required>
+  Fresh JWT token
+</ResponseField>
+
+<ResponseField name="expires_at" type="string" required>
+  ISO 8601 timestamp when this token expires (typically 1 hour from now)
+</ResponseField>
+
+## Example Request
+
+```bash
+# Current timestamp
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+
+# Sign the message: agentdoor:auth:ag_V1StGXR8_Z5jdHi6B:$TIMESTAMP
+# (signature generation depends on your crypto library)
+
+curl -X POST https://api.example.com/agentdoor/auth \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "ag_V1StGXR8_Z5jdHi6B",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "signature": "dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhZ2VudCI6eyJpZCI6ImFnX1YxU3RHWFI4X1o1amRIaTZCIiwicHVibGljS2V5IjoiY1hWcFkyczZZblJ2ZDI0Z1ptOTRJR3AxYlhCeklHOTJaWElnZEdobElHeGhlbms9Iiwic2NvcGVzIjpbIndlYXRoZXIucmVhZCIsImZvcmVjYXN0LnJlYWQiXSwicmF0ZUxpbWl0Ijp7InJlcXVlc3RzIjoxMDAwLCJ3aW5kb3ciOiIxaCJ9LCJyZXB1dGF0aW9uIjo1MCwibWV0YWRhdGEiOnsiZnJhbWV3b3JrIjoibGFuZ2NoYWluIn19LCJpYXQiOjE3MDQwNjcyMDAsImV4cCI6MTcwNDA3MDgwMH0.abc123...",
+  "expires_at": "2024-01-01T01:00:00.000Z"
+}
+```
+
+## Error Responses
+
+<ResponseField name="400 - invalid_request">
+  Missing or invalid required fields (agent_id, timestamp, signature)
+</ResponseField>
+
+<ResponseField name="400 - timestamp_invalid">
+  Timestamp is too far from server time. Maximum allowed clock skew is 5 minutes.
+</ResponseField>
+
+<ResponseField name="401 - invalid_signature">
+  Signature verification failed. Ensure you signed the message `agentdoor:auth:{agent_id}:{timestamp}` with the correct private key.
+</ResponseField>
+
+<ResponseField name="403 - agent_inactive">
+  Agent account is suspended or banned. Contact service owner for assistance.
+</ResponseField>
+
+<ResponseField name="404 - agent_not_found">
+  No registered agent found with this agent_id
+</ResponseField>
+
+## Message Format
+
+The signed message must follow this exact format:
+
+```
+agentdoor:auth:{agent_id}:{timestamp}
+```
+
+Example:
+```
+agentdoor:auth:ag_V1StGXR8_Z5jdHi6B:2024-01-01T00:00:00.000Z
+```
+
+<Warning>
+  The timestamp must be in ISO 8601 format and within 5 minutes of the server's current time. Requests with stale timestamps are rejected to prevent replay attacks.
+</Warning>
+
+## Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Service
+    
+    Note over Agent: JWT expired, need refresh
+    
+    Agent->>Agent: Generate current timestamp
+    Agent->>Agent: Sign agentdoor:auth:{id}:{timestamp}
+    Agent->>Service: POST /agentdoor/auth<br/>{agent_id, timestamp, signature}
+    Service->>Service: Verify signature & timestamp
+    Service->>Agent: 200 {token, expires_at}
+    
+    Note over Agent: Use new token for requests
+```
+
+## Timestamp Validation
+
+The service validates timestamps to prevent replay attacks:
+
+1. **Format**: Must be valid ISO 8601 (e.g., `2024-01-01T00:00:00.000Z`)
+2. **Freshness**: Must be within 5 minutes of server time
+3. **Clock Skew**: Allows up to 30 seconds into the future to account for clock differences
+
+If your timestamp is rejected:
+- Ensure your system clock is synchronized (use NTP)
+- Generate the timestamp immediately before signing
+- Don't reuse old signatures
+
+## When to Use This Endpoint
+
+Use the authentication endpoint when:
+
+1. **JWT Expired**: Your JWT token has expired (check `expires_at`)
+2. **Proactive Refresh**: You want to refresh before expiry to avoid downtime
+3. **New Session**: Starting a new agent session and don't want to use the API key
+
+Don't use it when:
+- You haven't registered yet (use [registration](/api/registration) instead)
+- Your API key works fine (API keys never expire, but JWTs do)
+- You're making occasional requests (just use the API key in the Authorization header)
+
+## Using the Token
+
+After receiving a fresh token, use it in the Authorization header:
+
+```bash
+curl https://api.example.com/weather \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+The token contains your agent context (scopes, rate limits, reputation) so the service doesn't need to look you up in the database on every request.
+
+## API Key vs JWT
+
+Both can be used for authentication:
+
+| Feature | API Key | JWT |
+|---------|---------|-----|
+| **Format** | `agk_live_*` or `agk_test_*` | `eyJ*` (base64) |
+| **Expiration** | Never expires | Expires after 1 hour (default) |
+| **Storage** | Store securely, reuse forever | Can cache, must refresh periodically |
+| **Lookup** | Requires database lookup | Self-contained, no lookup needed |
+| **Revocation** | Can be revoked instantly | Valid until expiration |
+| **Best For** | Long-running agents, development | High-frequency requests, production |
+
+<Tip>
+  For production workloads with frequent requests, use JWT tokens and refresh them proactively. For development or infrequent requests, API keys are simpler.
+</Tip>
+
+## Security Considerations
+
+1. **Timestamp Freshness**: Always generate a fresh timestamp for each auth request
+2. **Signature Reuse**: Never reuse old signatures - sign a new message each time
+3. **Private Key Security**: Keep your Ed25519 private key secure - it's your permanent identity
+4. **Token Storage**: Store JWT tokens securely, but they're less sensitive than API keys since they expire
+5. **Agent Status**: Suspended or banned agents cannot authenticate
+
+## Rate Limiting
+
+The auth endpoint is subject to your agent's rate limit. If you're hitting limits, consider:
+
+- Caching tokens until they're close to expiry
+- Using exponential backoff on auth failures
+- Monitoring `token_expires_at` and refreshing proactively
